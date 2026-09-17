@@ -2,7 +2,7 @@ import * as fs from "fs";
 import { UTXO } from "../model/utxo";
 
 export class UTXOHelper {
-    private readonly regexPrevout = /^[0-9a-f]{64}:\d+$/;
+    private readonly regexOutput = /^[0-9a-f]{64}:\d+$/;
     private readonly regexAddress = /^(1|3|m|n|2|bc1|tb1)\w{20,}$/;
     private readonly regexAmount = /^(\d+\.)?\d+$/;
 
@@ -10,6 +10,21 @@ export class UTXOHelper {
 
     constructor(utxoFile: string) {
         this.utxoContent = fs.readFileSync(utxoFile).toString().trim();
+    }
+
+    // Returns a diagnostic hint if the value contains any non-ASCII character
+    // (e.g. full-width digits U+FF10-U+FF19, non-breaking spaces U+00A0/U+202F),
+    // otherwise returns an empty string.
+    private nonAsciiHint(value: string): string {
+        const offenders: string[] = [];
+        for (const ch of value) {
+            if (ch.charCodeAt(0) > 0x7f) {
+                const hex = ch.charCodeAt(0).toString(16).toUpperCase().padStart(4, "0");
+                offenders.push(`${ch} (U+${hex})`);
+            }
+        }
+        if (offenders.length === 0) return "";
+        return `\n  contains non-ASCII character(s): ${offenders.join(", ")} (likely full-width digits or invisible chars) — re-type this field with plain ASCII.`;
     }
 
     parse(): UTXO[][] {
@@ -48,41 +63,36 @@ export class UTXOHelper {
             }
 
             const tokens = line.split(",");
-            if (tokens.length < 4) {
-                console.error(`Error on line ${lineNumber}: invalid line`);
+            if (tokens.length !== 5) {
+                console.error(`Error on line ${lineNumber}: expected 5 comma-separated tokens (Date,Output,Address,Label,Value), got ${tokens.length}`);
                 process.exit(1);
             }
 
-            let txid = "";
-            let vout = 0;
-            let amount = 0;
-            let address = "";
+            const [, outputStr, addressStr, , valueStr] = tokens.map(t => t.trim());
 
-            for (const token of tokens) {
-                const prevoutMatch = this.regexPrevout.exec(token);
-                if (prevoutMatch) {
-                    const matchTokens = prevoutMatch[0].split(":");
-                    txid = matchTokens[0];
-                    vout = parseInt(matchTokens[1]);
-                    continue;
-                }
-
-                const addressTypeMatch = this.regexAddress.exec(token);
-                if (addressTypeMatch) {
-                    address = addressTypeMatch[0];
-                    continue;
-                }
-
-                const amountMatch = this.regexAmount.exec(token);
-                if (amountMatch) {
-                    amount = Math.round(parseFloat(amountMatch[0]) * 1e8);
-                }
+            if (!this.regexOutput.exec(outputStr)) {
+                console.error(`Error on line ${lineNumber}: invalid output: "${outputStr}"${this.nonAsciiHint(outputStr)}`);
+                process.exit(1);
             }
+            const [txid, voutStr] = outputStr.split(":");
+            const vout = parseInt(voutStr, 10);
+
+            if (!this.regexAddress.exec(addressStr)) {
+                console.error(`Error on line ${lineNumber}: invalid address: "${addressStr}"${this.nonAsciiHint(addressStr)}`);
+                process.exit(1);
+            }
+            const address = addressStr;
+
+            if (!this.regexAmount.exec(valueStr)) {
+                console.error(`Error on line ${lineNumber}: invalid value: "${valueStr}"${this.nonAsciiHint(valueStr)}`);
+                process.exit(1);
+            }
+            const amount = Math.round(parseFloat(valueStr) * 1e8);
 
             const u = new UTXO(txid, vout, amount, address);
 
-            if (!txid || !address || amount === 0) {
-                console.error(`Error on line ${lineNumber}: failed to parse UTXO (txid=${txid}, vout=${vout}, amount=${amount}, address=${address})`);
+            if (amount === 0) {
+                console.error(`Error on line ${lineNumber}: value must be greater than 0`);
                 process.exit(1);
             }
 

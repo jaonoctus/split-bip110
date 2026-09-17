@@ -6,7 +6,7 @@
   "scripts": {
     "build": "npx tsc",
     "pkg": "npx tsc && npx @yao-pkg/pkg .",
-    "test": "npx tsc && node test/unified-sighash.test.js unified_sighash_all.json && node test/smoke-sign.test.js"
+    "test": "npx tsc && node test/run-all.js"
   },
   "author": "ottosch",
   "license": "ISC",

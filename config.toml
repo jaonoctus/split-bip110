@@ -1,4 +1,5 @@
 # Path to file with utxos
+# Expected format: Sparrow export with 5 comma-separated columns: Date,Output (`txid:vout`),Address,Label,Value (BTC)
 utxo_file = "utxos.csv"
 
 # Network: mainnet or testnet. Default: mainnet
