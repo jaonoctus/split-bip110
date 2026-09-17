@@ -90,7 +90,7 @@ export function signInputsUnified(psbt: Psbt, utxos: UTXO[], privkeyMap: Map<UTX
             scriptCode = payments.p2pkh({ hash: utxo.output.subarray(2) }).output;
         } else if (typeEnum === ScriptTypeEnum.P2SH) {
             sigVersion = SigVersion.WITNESS_V0;
-            scriptCode = payments.p2wpkh({ pubkey }).output;
+            scriptCode = payments.p2pkh({ pubkey }).output;
         } else {
             sigVersion = SigVersion.TAPROOT;
         }
