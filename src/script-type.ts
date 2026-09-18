@@ -1,10 +1,11 @@
-import { Network, Payment, payments, networks } from "bitcoinjs-lib";
+import { Network, Payment, payments, networks, address as btcAddress } from "bitcoinjs-lib";
 
 export enum ScriptTypeEnum {
     P2PKH,
     P2SH,
     P2WPKH,
     P2TR,
+    P2WSH,
 };
 
 export class ScriptType {
@@ -12,6 +13,7 @@ export class ScriptType {
     static P2SH = new ScriptType(ScriptTypeEnum.P2SH);
     static P2WPKH = new ScriptType(ScriptTypeEnum.P2WPKH);
     static P2TR = new ScriptType(ScriptTypeEnum.P2TR);
+    static P2WSH = new ScriptType(ScriptTypeEnum.P2WSH);
 
     private _typeEnum: ScriptTypeEnum;
 
@@ -33,6 +35,8 @@ export class ScriptType {
                 return 84;
             case ScriptTypeEnum.P2TR:
                 return 86;
+            case ScriptTypeEnum.P2WSH:
+                return 48;
         }
     }
 
@@ -45,6 +49,8 @@ export class ScriptType {
             case ScriptTypeEnum.P2WPKH:
                 return 294;
             case ScriptTypeEnum.P2TR:
+                return 330;
+            case ScriptTypeEnum.P2WSH:
                 return 330;
         }
     }
@@ -76,6 +82,11 @@ export class ScriptType {
                 return payments.p2wpkh(options);
             case ScriptTypeEnum.P2TR:
                 return payments.p2tr(options);
+            case ScriptTypeEnum.P2WSH:
+                if (!address) {
+                    throw new Error("P2WSH toPayment requires an address");
+                }
+                return { output: btcAddress.toOutputScript(address, options.network) } as Payment;
         }
     }
 
@@ -96,6 +107,10 @@ export class ScriptType {
 
         const bechPrefix = address.slice(0, 4);
         if ((mainnet && bechPrefix === "bc1q") || (!mainnet && bechPrefix === "tb1q")) {
+            const decoded = btcAddress.toOutputScript(address, network);
+            if (decoded.length - 1 === 33) {
+                return ScriptType.P2WSH;
+            }
             return ScriptType.P2WPKH;
         }
 

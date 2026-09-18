@@ -7,6 +7,9 @@ export type Config = {
     sourceWallet: {
         seed: string,
         passphrase: string,
+        seeds: string[],
+        passphrases: string[],
+        threshold: number,
     },
     destinationWallet: {
         xpub: BIP32Interface,

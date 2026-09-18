@@ -59,7 +59,7 @@ for (const c of cases) {
     psbt.addInput(input);
     psbt.addOutput({ address: payments.p2wpkh({ pubkey: recipient, network: NETWORK }).address, value: 99900 });
 
-    signInputsUnified(psbt, [utxo], new Map([[utxo, privkey]]));
+    signInputsUnified(psbt, [utxo], new Map([[utxo, [privkey]]]));
 
     let extractOk = false;
     let verifyOk = false;
@@ -122,3 +122,87 @@ for (const c of cases) {
 
 console.log(`\n${pass}/${pass + fail} smoke-sign cases passed.`);
 if (fail > 0) process.exit(1);
+
+// --- Multisig P2WSH 2-of-2 ---
+(function multisigTest() {
+    const pk1 = Buffer.alloc(32, 0x11);
+    const pk2 = Buffer.alloc(32, 0x22);
+    const pair1 = ECPair.fromPrivateKey(pk1);
+    const pair2 = ECPair.fromPrivateKey(pk2);
+
+    const pubkeys = [pair1.publicKey, pair2.publicKey].sort((a, b) => a.compare(b));
+    const p2ms = payments.p2ms({ m: 2, pubkeys, network: NETWORK });
+    const p2wsh = payments.p2wsh({ redeem: p2ms, network: NETWORK });
+
+    const privkeysSorted = pubkeys.map(pk => {
+        if (pk.equals(pair1.publicKey)) return pk1;
+        if (pk.equals(pair2.publicKey)) return pk2;
+        throw new Error("pubkey mismatch");
+    });
+
+    const msUtxo = new UTXO("0000000000000000000000000000000000000000000000000000000000000002", 0, 200000, p2wsh.address);
+    msUtxo.threshold = 2;
+    msUtxo.witnessScript = p2wsh.redeem.output;
+
+    const msPsbt = new Psbt({ network: NETWORK });
+    msPsbt.addInput({
+        hash: msUtxo.txid,
+        index: msUtxo.vout,
+        sequence: 0xfffffffd,
+        witnessUtxo: { script: msUtxo.output, value: msUtxo.amount },
+        witnessScript: msUtxo.witnessScript,
+    });
+    msPsbt.addOutput({ address: payments.p2wpkh({ pubkey: recipient, network: NETWORK }).address, value: 199900 });
+
+    signInputsUnified(msPsbt, [msUtxo], new Map([[msUtxo, privkeysSorted]]));
+
+    let msExtractOk = false;
+    let msVerifyOk = false;
+    let msDetail = "";
+    try {
+        const tx = msPsbt.extractTransaction();
+        msExtractOk = true;
+
+        const spentOutputs = [{ value: msUtxo.amount, scriptPubKey: msUtxo.output }];
+        const digest = unifiedSighash(tx, 0, HASH_TYPE, SigVersion.WITNESS_V0, spentOutputs, { scriptCode: msUtxo.witnessScript });
+
+        const witness = tx.ins[0].witness;
+        // Expected: [empty(dummy), sig1, sig2, witnessScript]
+        if (witness.length !== 4) {
+            throw new Error(`witness has ${witness.length} items, expected 4`);
+        }
+        if (witness[0].length !== 0) {
+            throw new Error("witness[0] is not the empty CHECKMULTISIG dummy");
+        }
+        if (!witness[3].equals(msUtxo.witnessScript)) {
+            throw new Error("witness[last] does not match witnessScript");
+        }
+
+        // Verify both signatures against the pubkeys in the witnessScript order
+        const wsPubkeys = pubkeys;
+        let bothVerified = true;
+        for (let k = 0; k < 2; k++) {
+            const sig = witness[1 + k];
+            const compact = derToCompact(sig.subarray(0, sig.length - 1));
+            if (!ecc.verify(digest, wsPubkeys[k], compact)) {
+                bothVerified = false;
+                msDetail = `signature ${k} did not verify`;
+                break;
+            }
+        }
+        msVerifyOk = bothVerified;
+    } catch (e) {
+        msDetail = e.message;
+    }
+
+    if (msExtractOk && msVerifyOk) {
+        console.log(`PASS P2WSH 2-of-2 multisig -> extract OK, both sigs verified`);
+        pass++;
+    } else {
+        console.log(`FAIL P2WSH 2-of-2 multisig -> extract=${msExtractOk} verify=${msVerifyOk} ${msDetail}`);
+        fail++;
+    }
+
+    console.log(`\n${pass}/${pass + fail} smoke-sign cases passed.`);
+    if (fail > 0) process.exit(1);
+})();

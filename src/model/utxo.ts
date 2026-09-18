@@ -8,6 +8,8 @@ export class UTXO {
     private _address: string;
     private _scriptType: ScriptType;
     private _network: Network;
+    private _threshold: number = 0;
+    private _witnessScript?: Buffer;
 
     constructor(txid: string, vout: number, amount: number, address: string) {
         this._txid = txid;
@@ -54,5 +56,21 @@ export class UTXO {
 
     get output(): Buffer {
         return this._scriptType.toPayment(this._address, undefined, this._network).output as Buffer;
+    }
+
+    get threshold(): number {
+        return this._threshold;
+    }
+
+    set threshold(value: number) {
+        this._threshold = value;
+    }
+
+    get witnessScript(): Buffer | undefined {
+        return this._witnessScript;
+    }
+
+    set witnessScript(value: Buffer | undefined) {
+        this._witnessScript = value;
     }
 }

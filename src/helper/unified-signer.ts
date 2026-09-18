@@ -63,20 +63,18 @@ function scriptSignature(signature: Buffer, hashType: number): Buffer {
     return Buffer.concat([derSignature(signature.subarray(0, 32), signature.subarray(32)), Buffer.from([hashType])]);
 }
 
-export function signInputsUnified(psbt: Psbt, utxos: UTXO[], privkeyMap: Map<UTXO, Buffer>): void {
+export function signInputsUnified(psbt: Psbt, utxos: UTXO[], privkeyMap: Map<UTXO, Buffer[]>): void {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const tx = (psbt as any).__CACHE.__TX;
     const spentOutputs = utxos.map(u => ({ value: u.amount, scriptPubKey: u.output }));
 
     for (let i = 0; i < utxos.length; i++) {
         const utxo = utxos[i];
-        const privkey = privkeyMap.get(utxo);
-        if (!privkey) {
+        const privkeys = privkeyMap.get(utxo);
+        if (!privkeys || privkeys.length === 0) {
             throw new Error(`No private key found for UTXO ${utxo.prevout}`);
         }
 
-        const pair = ECPair.fromPrivateKey(privkey);
-        const pubkey = pair.publicKey;
         const typeEnum = utxo.scriptType.typeEnum;
 
         let sigVersion: SigVersion;
@@ -90,7 +88,11 @@ export function signInputsUnified(psbt: Psbt, utxos: UTXO[], privkeyMap: Map<UTX
             scriptCode = payments.p2pkh({ hash: utxo.output.subarray(2) }).output;
         } else if (typeEnum === ScriptTypeEnum.P2SH) {
             sigVersion = SigVersion.WITNESS_V0;
+            const pubkey = ECPair.fromPrivateKey(privkeys[0]).publicKey;
             scriptCode = payments.p2pkh({ pubkey }).output;
+        } else if (typeEnum === ScriptTypeEnum.P2WSH) {
+            sigVersion = SigVersion.WITNESS_V0;
+            scriptCode = utxo.witnessScript;
         } else {
             sigVersion = SigVersion.TAPROOT;
         }
@@ -101,9 +103,24 @@ export function signInputsUnified(psbt: Psbt, utxos: UTXO[], privkeyMap: Map<UTX
         let finalScriptWitness: Buffer | undefined;
 
         if (typeEnum === ScriptTypeEnum.P2TR) {
+            const pair = ECPair.fromPrivateKey(privkeys[0]);
+            const pubkey = pair.publicKey;
             const tweaked = pair.tweak(crypto.taggedHash("TapTweak", pubkey.subarray(1)));
             finalScriptWitness = witnessStackToScriptWitness([Buffer.concat([tweaked.signSchnorr(digest), Buffer.from([HASH_TYPE])])]);
+        } else if (typeEnum === ScriptTypeEnum.P2WSH) {
+            const threshold = utxo.threshold;
+            const witnessScript = utxo.witnessScript as Buffer;
+            const witnessItems: Buffer[] = [Buffer.alloc(0)];
+            for (let j = 0; j < threshold; j++) {
+                const pair = ECPair.fromPrivateKey(privkeys[j]);
+                const sig = scriptSignature(pair.sign(digest), HASH_TYPE);
+                witnessItems.push(sig);
+            }
+            witnessItems.push(witnessScript);
+            finalScriptWitness = witnessStackToScriptWitness(witnessItems);
         } else {
+            const pair = ECPair.fromPrivateKey(privkeys[0]);
+            const pubkey = pair.publicKey;
             const sig = scriptSignature(pair.sign(digest), HASH_TYPE);
             if (typeEnum === ScriptTypeEnum.P2PKH) {
                 finalScriptSig = bscript.compile([sig, pubkey]);

@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as bitcoin from "bitcoinjs-lib";
 import * as ecc from "tiny-secp256k1";
-import { BIP32Factory } from "bip32";
+import { BIP32Factory, BIP32Interface } from "bip32";
 import { ConfigHelper } from "./helper/config-helper";
 import { TransactionHelper } from "./helper/transaction-helper";
 import { UTXOPrivkeyHelper } from "./helper/utxo-privkey-helper";
@@ -38,13 +38,25 @@ async function main() {
         process.exit(1);
     }
 
-    const mnHelper = new MnemonicsHelper(config.sourceWallet.seed);
-    mnHelper.passphrase = config.sourceWallet.passphrase;
+    let utxoPrivkeyMap: Map<import("./model/utxo").UTXO, Buffer[]>;
 
-    const seed = mnHelper.generateSeed();
-    const rootXprv = bip32.fromSeed(seed, config.network);
-
-    const utxoPrivkeyMap = new UTXOPrivkeyHelper(config, rootXprv).buildMap();
+    if (config.sourceWallet.seeds.length > 0) {
+        console.log(`Multisig: ${config.sourceWallet.threshold}-of-${config.sourceWallet.seeds.length}`);
+        const rootXprvs: BIP32Interface[] = [];
+        for (let i = 0; i < config.sourceWallet.seeds.length; i++) {
+            const mnHelper = new MnemonicsHelper(config.sourceWallet.seeds[i]);
+            mnHelper.passphrase = config.sourceWallet.passphrases[i] ?? "";
+            const seed = mnHelper.generateSeed();
+            rootXprvs.push(bip32.fromSeed(seed, config.network));
+        }
+        utxoPrivkeyMap = new UTXOPrivkeyHelper(config, rootXprvs).buildMap();
+    } else {
+        const mnHelper = new MnemonicsHelper(config.sourceWallet.seed);
+        mnHelper.passphrase = config.sourceWallet.passphrase;
+        const seed = mnHelper.generateSeed();
+        const rootXprv = bip32.fromSeed(seed, config.network);
+        utxoPrivkeyMap = new UTXOPrivkeyHelper(config, rootXprv).buildMap();
+    }
 
     const allTransactions = new TransactionHelper(config, utxoPrivkeyMap).createTransactions();
 

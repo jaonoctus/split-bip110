@@ -6,10 +6,20 @@ utxo_file = "utxos.csv"
 network = "mainnet"
 
 [source_wallet]
-# Seed words (mnemonic) of the wallet to migrate from
+# This is the wallet to spend from.
+# For a regular HD wallet, fill seed with the seed words (mnemonic) and optional BIP39 passphrase (default empty - no passphrase)
 seed = "word1 word2 ... wordN"
-# Optional passphrase (BIP39). Default: empty string (no passphrase)
 passphrase = ""
+
+# For multisig (m-of-n), fill seed1, seed2 ... seedN, their optional passphrases and the required threshold.
+# For example, if the wallet is 2-of-3, fill seed1/seed2/seed3, optional passphrase1/2/3 and set threshold = 2.
+# seed1 = "word1 word2 ... wordN"
+# passphrase1 = ""
+# seed2 = "word1 word2 ... wordN"
+# passphrase2 = ""
+# seed3 = "word1 word2 ... wordN"
+# passphrase3 = ""
+# threshold = 2
 
 # Max number of addresses to derive when searching for UTXO private keys
 # You might need to increase this if the wallet is very deep

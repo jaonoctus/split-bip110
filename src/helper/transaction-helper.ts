@@ -10,9 +10,9 @@ const ECPair = ECPairFactory(ecc);
 
 export class TransactionHelper {
     private _config: Config;
-    private _utxoPrivkeyMap: Map<UTXO, Buffer>;
+    private _utxoPrivkeyMap: Map<UTXO, Buffer[]>;
 
-    constructor(config: Config, utxoPrivkeyMap: Map<UTXO, Buffer>) {
+    constructor(config: Config, utxoPrivkeyMap: Map<UTXO, Buffer[]>) {
         this._config = config;
         this._utxoPrivkeyMap = utxoPrivkeyMap;
     }
@@ -47,8 +47,8 @@ export class TransactionHelper {
         let inputTotal = 0;
 
         for (const utxo of utxoGroup) {
-            const privkey = this._utxoPrivkeyMap.get(utxo) as Buffer;
-            if (!privkey) {
+            const privkeys = this._utxoPrivkeyMap.get(utxo) as Buffer[];
+            if (!privkeys || privkeys.length === 0) {
                 console.error(`Fatal: no private key found for UTXO:\n${utxo}`);
                 process.exit(1);
             }
@@ -59,6 +59,7 @@ export class TransactionHelper {
                 sequence: number;
                 witnessUtxo: { script: Buffer; value: number };
                 redeemScript?: Buffer;
+                witnessScript?: Buffer;
                 tapInternalKey?: Buffer;
             } = {
                 hash: utxo.txid,
@@ -71,10 +72,12 @@ export class TransactionHelper {
             };
 
             if (utxo.scriptType.typeEnum === ScriptTypeEnum.P2SH) {
-                const pubkey = ECPair.fromPrivateKey(privkey).publicKey;
+                const pubkey = ECPair.fromPrivateKey(privkeys[0]).publicKey;
                 input.redeemScript = payments.p2wpkh({ pubkey, network: this._config.network }).output;
+            } else if (utxo.scriptType.typeEnum === ScriptTypeEnum.P2WSH) {
+                input.witnessScript = utxo.witnessScript;
             } else if (utxo.scriptType.typeEnum === ScriptTypeEnum.P2TR) {
-                const pubkey = ECPair.fromPrivateKey(privkey).publicKey;
+                const pubkey = ECPair.fromPrivateKey(privkeys[0]).publicKey;
                 input.tapInternalKey = pubkey.subarray(1);
             }
 

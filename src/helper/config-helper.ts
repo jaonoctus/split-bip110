@@ -30,10 +30,15 @@ export class ConfigHelper {
 
         const utxos = new UTXOHelper(this._cfgContent.utxo_file).parse();
 
+        const multisigSeeds = this.parseMultisigSeeds();
+
         return {
             sourceWallet: {
-                seed: this.parseSeed(),
-                passphrase: this.parsePassphrase(),
+                seed: multisigSeeds.length > 0 ? "" : this.parseSeed(),
+                passphrase: multisigSeeds.length > 0 ? "" : this.parsePassphrase(),
+                seeds: multisigSeeds,
+                passphrases: multisigSeeds.length > 0 ? this.parseMultisigPassphrases(multisigSeeds.length) : [],
+                threshold: multisigSeeds.length > 0 ? this.parseThreshold(multisigSeeds.length) : 0,
             },
             destinationWallet: {
                 xpub: this._walletXpub,
@@ -210,6 +215,66 @@ export class ConfigHelper {
             process.exit(1);
         }
         return value;
+    }
+
+    private parseMultisigSeeds(): string[] {
+        const sw = this._cfgContent.source_wallet;
+        if (!sw) return [];
+
+        const hasBareSeed = typeof sw.seed === "string" && sw.seed.trim().length > 0;
+        const indexedSeeds: string[] = [];
+        for (let i = 1; ; i++) {
+            const value = sw[`seed${i}`];
+            if (value === undefined) break;
+            if (typeof value !== "string" || value.trim().length === 0) {
+                console.error(`Invalid or missing seed${i} in [source_wallet]`);
+                process.exit(1);
+            }
+            indexedSeeds.push(value.trim());
+        }
+
+        if (indexedSeeds.length > 0 && hasBareSeed) {
+            console.error("[source_wallet] contains multisig AND singlesig configuration. Either fill seed or seed1/2/N");
+            process.exit(1);
+        }
+
+        if (indexedSeeds.length > 0 && indexedSeeds.length < 2) {
+            console.error("Multisig requires at least 2 seeds (seed1, seed2, ...)");
+            process.exit(1);
+        }
+
+        return indexedSeeds;
+    }
+
+    private parseMultisigPassphrases(count: number): string[] {
+        const sw = this._cfgContent.source_wallet;
+        const result: string[] = [];
+        for (let i = 1; i <= count; i++) {
+            const value = sw[`passphrase${i}`];
+            if (value === undefined || value === null) {
+                result.push("");
+            } else if (typeof value !== "string") {
+                console.error(`Invalid passphrase${i} in [source_wallet]`);
+                process.exit(1);
+            } else {
+                result.push(value);
+            }
+        }
+        return result;
+    }
+
+    private parseThreshold(seedCount: number): number {
+        const value = this._cfgContent.source_wallet?.threshold;
+        if (value === undefined || value === null) {
+            console.error("Missing 'threshold' in [source_wallet] for multisig");
+            process.exit(1);
+        }
+        const num = Number(value);
+        if (isNaN(num) || !Number.isSafeInteger(num) || num < 1 || num > seedCount) {
+            console.error(`Invalid threshold: ${value} (must be 1..${seedCount})`);
+            process.exit(1);
+        }
+        return num;
     }
 
     private parseFeeVariation(): number {
