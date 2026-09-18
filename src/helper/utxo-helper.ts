@@ -9,7 +9,17 @@ export class UTXOHelper {
     private utxoContent: string;
 
     constructor(utxoFile: string) {
-        this.utxoContent = fs.readFileSync(utxoFile).toString().trim();
+        try {
+            this.utxoContent = fs.readFileSync(utxoFile).toString().trim();
+        } catch (e: any) {
+            if (e.code === "ENOENT") {
+                console.error(`File not found: ${utxoFile}`);
+            } else {
+                console.error(`Error reading ${utxoFile}: ${e.message}`);
+            }
+
+            process.exit(1);
+        }
     }
 
     // Returns a diagnostic hint if the value contains any non-ASCII character

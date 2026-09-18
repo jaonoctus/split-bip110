@@ -18,8 +18,18 @@ export class ConfigHelper {
     private _addressLimit = 0;
 
     constructor(configFile: string) {
-        const content = fs.readFileSync(configFile).toString();
-        this._cfgContent = toml.parse(content);
+        try {
+            const content = fs.readFileSync(configFile).toString();
+            this._cfgContent = toml.parse(content);
+        } catch (e: any) {
+            if (e.code === "ENOENT") {
+                console.error(`File not found: ${configFile}`);
+            } else {
+                console.error(`Error reading ${configFile}: ${e.message}`);
+            }
+
+            process.exit(1);
+        }
     }
 
     parse(): Config {
