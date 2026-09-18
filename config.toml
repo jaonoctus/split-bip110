@@ -27,16 +27,18 @@ passphrase = ""
 address_limit = 2000
 
 [destination_wallet]
-# xpub (or zpub etc) of the receiving wallet to derive the receiving addresses from
+# xpub (or zpub etc) of the receiving wallet to derive receiving addresses from
 xpub = ""
-
 # Address type to derive: segwit, taproot, legacy or p2sh. Default: segwit
 type = "segwit"
-
-# If the BIP110 wallet already has history, you can specify the first index to use (0-based) *OR* first address to start from
+# If the receiving wallet already has history, you can specify the first index to use (0-based) *OR* first address to start from
 # Default: 0
 initial_index = 0
-# initial_address = ""
+# initial_address = "bc1q..."
+
+# Alternatively, set "address" to send all transactions to a single address.
+# If set, xpub/type/initial_index/initial_address are ignored.
+# address = "bc1q..."
 
 [transaction]
 # Fee rate to use in sat/vb

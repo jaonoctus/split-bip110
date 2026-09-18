@@ -34,13 +34,13 @@ export class ConfigHelper {
 
     parse(): Config {
         this._network = this.parseNetwork();
-        this._walletXpub = this.parseXpub();
-        this._walletType = this.parseWalletType();
         this._addressLimit = this.parseAddressLimit()
 
         const utxos = new UTXOHelper(this._cfgContent.utxo_file).parse();
 
         const multisigSeeds = this.parseMultisigSeeds();
+
+        const destWallet = this.parseDestinationWallet();
 
         return {
             sourceWallet: {
@@ -50,16 +50,52 @@ export class ConfigHelper {
                 passphrases: multisigSeeds.length > 0 ? this.parseMultisigPassphrases(multisigSeeds.length) : [],
                 threshold: multisigSeeds.length > 0 ? this.parseThreshold(multisigSeeds.length) : 0,
             },
-            destinationWallet: {
-                xpub: this._walletXpub,
-                startIndex: this.parseStartIndex(),
-                scriptType: this._walletType,
-            },
+            destinationWallet: destWallet,
             addressLimit: this._addressLimit,
             feeRate: this.parseFeeRate(),
             feeVariation: this.parseFeeVariation(),
             network: this._network,
             utxos: utxos,
+        };
+    }
+
+    private parseDestinationWallet(): Config["destinationWallet"] {
+        const dw = this._cfgContent.destination_wallet;
+        const xpubValue = dw?.xpub;
+        const addressValue = dw?.address;
+
+        if (xpubValue !== undefined && xpubValue !== "" && addressValue !== undefined && addressValue !== "") {
+            console.error("[destination_wallet] contains both xpub and address. Fill only one.");
+            process.exit(1);
+        }
+
+        if (addressValue !== undefined && addressValue !== "") {
+            if (typeof addressValue !== "string") {
+                console.error(`Invalid address in [destination_wallet]: ${addressValue}`);
+                process.exit(1);
+            }
+            try {
+                const scriptType = ScriptType.fromAddress(addressValue, this._network);
+                scriptType.toPayment(addressValue, undefined, this._network);
+                this._walletType = scriptType;
+            } catch (e) {
+                const err = e instanceof Error ? e.message : e;
+                console.error(`Invalid address in [destination_wallet]: ${addressValue} (${err})`);
+                process.exit(1);
+            }
+            return {
+                address: addressValue,
+                startIndex: 0,
+                scriptType: this._walletType,
+            };
+        }
+
+        this._walletXpub = this.parseXpub();
+        this._walletType = this.parseWalletType();
+        return {
+            xpub: this._walletXpub,
+            startIndex: this.parseStartIndex(),
+            scriptType: this._walletType,
         };
     }
 

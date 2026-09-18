@@ -20,13 +20,13 @@ export class TransactionHelper {
     createTransactions(): Tx[] {
         const txs: Tx[] = [];
         const walletType = this._config.destinationWallet.scriptType;
-        const recvXpub = this._config.destinationWallet.xpub.derive(0);
+        const fixedAddress = this._config.destinationWallet.address;
+        const recvXpub = fixedAddress ? undefined : this._config.destinationWallet.xpub?.derive(0);
 
         let xpubIndex = this._config.destinationWallet.startIndex;
 
         for (const utxoGroup of this._config.utxos) {
-            const recipientPubkey = recvXpub.derive(xpubIndex);
-            const recipientAddress = walletType.toPayment(undefined, recipientPubkey.publicKey, this._config.network).address as string;
+            const recipientAddress = fixedAddress ?? walletType.toPayment(undefined, recvXpub!.derive(xpubIndex).publicKey, this._config.network).address as string;
 
             const dummyPsbt = this.createTx(utxoGroup, recipientAddress);
             const actualFee = this.calcFee(dummyPsbt);
@@ -35,7 +35,9 @@ export class TransactionHelper {
 
             txs.push(new Tx(finalPsbt, utxoGroup, xpubIndex));
 
-            xpubIndex++;
+            if (!fixedAddress) {
+              xpubIndex++;
+            }
         }
 
         return txs;

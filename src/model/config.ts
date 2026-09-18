@@ -12,7 +12,8 @@ export type Config = {
         threshold: number,
     },
     destinationWallet: {
-        xpub: BIP32Interface,
+        xpub?: BIP32Interface,
+        address?: string,
         startIndex: number,
         scriptType: ScriptType,
     },

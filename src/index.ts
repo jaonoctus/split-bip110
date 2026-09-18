@@ -17,11 +17,15 @@ async function main() {
     const config = cfgHelper.parse();
     console.log("Done");
 
-    console.log("xpub:");
-    console.log(config.destinationWallet.xpub.toBase58());
-
-    console.log("start index:");
-    console.log(config.destinationWallet.startIndex);
+    if (config.destinationWallet.address) {
+        console.log("destination address:");
+        console.log(config.destinationWallet.address);
+    } else {
+        console.log("xpub:");
+        console.log(config.destinationWallet.xpub?.toBase58());
+        console.log("start index:");
+        console.log(config.destinationWallet.startIndex);
+    }
 
     console.log("fee rate:");
     console.log(config.feeRate);
