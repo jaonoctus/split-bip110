@@ -17,10 +17,14 @@
   },
   "bin": "dist/index.js",
   "dependencies": {
+    "@inquirer/prompts": "7.10.1",
     "bip32": "4.0.0",
     "bip39": "3.1.0",
     "bitcoinjs-lib": "6.1.6",
+    "chalk": "4.1.2",
+    "commander": "14.0.3",
     "ecpair": "2.1.0",
+    "ora": "5.4.1",
     "tiny-secp256k1": "2.2.3",
     "toml": "3.0.0",
     "typescript": "5.4.5"
