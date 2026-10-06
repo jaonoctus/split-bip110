@@ -5,6 +5,7 @@ const tests = [
     { file: "unified-sighash.test.js", args: ["unified_sighash_all.json"] },
     { file: "smoke-sign.test.js", args: [] },
     { file: "utxo-helper.test.js", args: [] },
+    { file: "wizard.test.js", args: [] },
 ];
 
 for (const t of tests) {
