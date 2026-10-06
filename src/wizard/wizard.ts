@@ -2,7 +2,6 @@ import * as fs from "fs";
 import * as path from "path";
 import chalk from "chalk";
 import ora from "ora";
-import base58 from "bs58check";
 import { checkbox, confirm, input, number, password, select } from "@inquirer/prompts";
 import { BIP32Interface } from "bip32";
 import { address as btcAddress, networks } from "bitcoinjs-lib";
@@ -13,9 +12,11 @@ import {
     Destination, GroupingMode, PlannedTx, buildPlan, describePlan, destinationAddress, groupCoins, linkageWarnings, verifyParent,
 } from "./builder";
 import { BIP110, BITCOIN, ChainProfile } from "./chain";
-import { Descriptor, parseDescriptor, walletFingerprints } from "./descriptor";
-import { matchKeys, mnemonicProblem, rootFromMnemonic, signPlan } from "./hot-signer";
-import { Coin, ScanResult, findLatestScan, formatBtc, outpoint, scanDescriptor, writeScanFile } from "./scan";
+import { Descriptor, isPrivateKey, keyCandidates, parseDescriptor, toXpub, walletFingerprints } from "./descriptor";
+import {
+    KeySigner, descriptorSigner, matchKeys, mnemonicProblem, parseWifs, rootFromMnemonic, rootSigner, signPlan, unsignedCoins, wifSigner, xprvSigner,
+} from "./hot-signer";
+import { Coin, ScanResult, findLatestScan, formatBtc, hasReceiveHistory, outpoint, scanDescriptor, writeScanFile } from "./scan";
 
 // Answers given as command-line flags, per chain. Anything left undefined is asked.
 export type ChainAnswers = {
@@ -38,6 +39,8 @@ export type WizardOptions = {
     descriptor?: string;
     // Accept the privacy notice, linkage warnings and confirmations without asking.
     yes: boolean;
+    // Accept the opening risk notice without typing "I UNDERSTAND".
+    yolo?: boolean;
     // Whether to run the Bitcoin step; asked when undefined.
     btc?: boolean;
     bip110: ChainAnswers;
@@ -78,7 +81,7 @@ function parseOrThrow(text: string, flag: string): Descriptor {
     catch (error) { throw flagError(flag, error instanceof Error ? error.message : String(error)); }
 }
 
-function describeDescriptor(descriptor: Descriptor): string {
+function kindName(descriptor: Descriptor): string {
     const kinds: Record<Descriptor["kind"], string> = {
         "pkh": "Legacy (P2PKH)",
         "sh-wpkh": "Nested SegWit (P2SH-P2WPKH)",
@@ -86,29 +89,131 @@ function describeDescriptor(descriptor: Descriptor): string {
         "tr": "Taproot (P2TR)",
         "wsh-sortedmulti": `Multisig ${descriptor.threshold}-of-${descriptor.keys.length} (P2WSH)`,
     };
-    const keys = descriptor.keys.map(k => `[${k.fingerprint.toString("hex")}${k.hasOrigin ? k.originPath.slice(1) : ""}]`).join(" ");
-    return `${kinds[descriptor.kind]}, keys ${keys}, ${descriptor.branches} branch(es)`;
+    return kinds[descriptor.kind];
 }
 
-async function askDescriptor(message = "Paste the output descriptor of the wallet holding the coins:", preset?: { text: string; flag: string }): Promise<Descriptor> {
-    let descriptor: Descriptor;
-    if (preset) {
-        descriptor = parseOrThrow(preset.text, preset.flag);
-        fromFlag(message, descriptor.text);
-    } else {
-        const text = await input({
-            message,
-            validate: value => {
-                try { parseDescriptor(value); return true; }
-                catch (error) { return error instanceof Error ? error.message : String(error); }
-            },
-        });
-        descriptor = parseDescriptor(text);
-    }
+function describeDescriptor(descriptor: Descriptor): string {
+    const keys = descriptor.keys.map(k => `[${k.fingerprint.toString("hex")}${k.hasOrigin ? k.originPath.slice(1) : ""}]`).join(" ");
+    return `${kindName(descriptor)}, keys ${keys}, ${descriptor.branches} branch(es)`;
+}
+
+// A destination needs fresh addresses and only its public keys.
+function destinationProblem(descriptor: Descriptor): string | undefined {
+    if (!descriptor.ranged) return "needs a ranged descriptor (xpub/.../*) to give each transaction a fresh address";
+    if (descriptor.keys.some(k => k.secret)) return "only needs public keys; use the xpub, not the private key";
+    return undefined;
+}
+
+async function askDescriptor(message: string): Promise<Descriptor> {
+    const text = await input({
+        message,
+        transformer: maskPrivateKeys,
+        validate: value => {
+            try { return destinationProblem(parseDescriptor(value)) ?? true; }
+            catch (error) { return error instanceof Error ? error.message : String(error); }
+        },
+    });
+    const descriptor = parseDescriptor(text);
+    printDescriptor(descriptor);
+    return descriptor;
+}
+
+function printDescriptor(descriptor: Descriptor): void {
     info(`  ${describeDescriptor(descriptor)}`);
     info(`  First address: ${descriptor.derive(0, 0).address}`);
     if (descriptor.addedChange) info("  Receive-only descriptor: the matching /1/* change branch will be scanned too.");
-    return descriptor;
+}
+
+function parseSource(text: string): Descriptor[] {
+    return keyCandidates(text) ?? [parseDescriptor(text)];
+}
+
+// Hides xprvs and WIFs, so private keys are never echoed to the terminal.
+function maskPrivateKeys(text: string): string {
+    return text.replace(/[0-9a-zA-Z]+/g, token => isPrivateKey(token) ? "[private key hidden]" : token);
+}
+
+// The wallet holding the coins: an output descriptor, or a bare key (xpub/ypub/zpub, xprv/yprv/zprv,
+// WIF or hex public key). Private keys are kept in memory to sign with later. Returns every
+// descriptor the input could stand for; the script type of a bare key is told apart by scanning.
+async function askSource(preset?: string): Promise<Descriptor[]> {
+    const message = "Paste the output descriptor, xpub, xprv or WIF of the wallet holding the coins:";
+    let candidates: Descriptor[];
+    if (preset !== undefined) {
+        try { candidates = parseSource(preset); }
+        catch (error) { throw flagError("--descriptor", error instanceof Error ? error.message : String(error)); }
+        fromFlag(message, maskPrivateKeys(preset.trim()));
+        if (candidates[0].keys.some(k => k.secret)) {
+            warn("A private key was passed as a flag, so it may now be in your shell history. Clear it from there.");
+        }
+    } else {
+        const text = await input({
+            message,
+            transformer: maskPrivateKeys,
+            validate: value => {
+                try { parseSource(value); return true; }
+                catch (error) { return error instanceof Error ? error.message : String(error); }
+            },
+        });
+        candidates = parseSource(text);
+    }
+    if (candidates[0].keys.some(k => k.secret)) {
+        info("  Private key(s) received. They stay in memory only, can sign later, and are never written to disk.");
+    }
+    if (candidates.length === 1) {
+        printDescriptor(candidates[0]);
+        return candidates;
+    }
+    info(`  This key does not say which address type it was used with. The scan will check`);
+    info(`  ${candidates.map(kindName).join(", ")} addresses and use the one with history.`);
+    return candidates;
+}
+
+// Picks the descriptor a bare key was used with on this chain: the type with a saved scan when
+// reusing saved coins offline, otherwise the type whose first receive addresses have history.
+// Undefined when no type has been used.
+async function resolveSource(
+    chain: ChainProfile, candidates: Descriptor[], backend: BackendChoice, options: WizardOptions, answers: ChainAnswers,
+): Promise<Descriptor | undefined> {
+    if (candidates.length === 1) return candidates[0];
+    let used: Descriptor[];
+    if (answers.scan === "offline") {
+        used = candidates.filter(d => findLatestScan(options.scanDir, chain, d).scan);
+        if (used.length === 0) throw flagError(flagName(chain, "scan"), `no saved ${chain.name} scan of this key in ${options.scanDir}`);
+    } else {
+        await confirmConnectionPrivacy(options, backend);
+        const spinner = ora(`Connecting to ${backend.label}`).start();
+        let client: Backend | undefined;
+        used = [];
+        try {
+            client = await backend.open();
+            for (const candidate of candidates) {
+                spinner.text = `Looking for ${kindName(candidate)} history (first ${options.gapLimit} receive addresses)`;
+                if (await hasReceiveHistory(candidate, client, options.gapLimit)) used.push(candidate);
+            }
+            spinner.succeed(used.length === 0 ? "No address type of this key has history" :
+                `Address type(s) with history: ${used.map(kindName).join(", ")}`);
+        } catch (error) {
+            spinner.fail("Address type check failed");
+            throw error;
+        } finally {
+            client?.close();
+        }
+    }
+    if (used.length === 0) return undefined;
+    let chosen = used[0];
+    if (used.length > 1) {
+        warn("This key has history on more than one address type. Each run moves one type;");
+        warn("run the tool again with the same key to move the others.");
+        chosen = await select({
+            message: "Which address type should this run use?",
+            choices: used.map(d => ({ name: kindName(d), value: d, description: `First address ${d.derive(0, 0).address}` })),
+        });
+    }
+    info(`Using ${chosen.text}`);
+    info("(pass it as --descriptor next time to skip this check)");
+    printDescriptor(chosen);
+    return chosen;
 }
 
 async function askBackend(chain: ChainProfile, options: WizardOptions, answers: ChainAnswers): Promise<BackendChoice> {
@@ -291,13 +396,6 @@ function printCoins(coins: Coin[], step: (branch: number) => string): void {
     }
 }
 
-function toXpub(value: string): string {
-    if (value.startsWith("xpub")) return value;
-    const data = Buffer.from(base58.decode(value));
-    data.writeUInt32BE(networks.bitcoin.bip32.public, 0);
-    return base58.encode(data);
-}
-
 const DEST_TYPES = {
     segwit: ScriptType.P2WPKH,
     taproot: ScriptType.P2TR,
@@ -318,6 +416,7 @@ function destinationFromFlags(chain: ChainProfile, source: Descriptor, answers: 
         let account: BIP32Interface;
         try { account = bip32.fromBase58(toXpub(answers.destXpub), networks.bitcoin); }
         catch { throw flagError(flag, "not a valid mainnet extended public key"); }
+        if (!account.isNeutered()) throw flagError(flag, "only needs the public key; use the xpub, not the xprv");
         const inferred = answers.destXpub.startsWith("zpub") ? ScriptType.P2WPKH : answers.destXpub.startsWith("ypub") ? ScriptType.P2SH : undefined;
         const scriptType = answers.destType ? DEST_TYPES[answers.destType] : inferred;
         if (!scriptType) throw flagError(flagName(chain, "dest-type"), `required with an xpub (${Object.keys(DEST_TYPES).join(", ")})`);
@@ -325,6 +424,8 @@ function destinationFromFlags(chain: ChainProfile, source: Descriptor, answers: 
     }
     if (answers.destDescriptor) {
         const descriptor = parseOrThrow(answers.destDescriptor, flagName(chain, "dest-descriptor"));
+        const problem = destinationProblem(descriptor);
+        if (problem) throw flagError(flagName(chain, "dest-descriptor"), problem);
         if (descriptor.id === source.id) throw flagError(flagName(chain, "dest-descriptor"), "is the wallet the coins are already in");
         return { kind: "descriptor", descriptor, startIndex: index };
     }
@@ -376,7 +477,7 @@ async function askDestination(chain: ChainProfile, source: Descriptor, options: 
     const encoded = (await input({
         message: "Account xpub/ypub/zpub of the destination wallet:",
         validate: value => {
-            try { bip32.fromBase58(toXpub(value.trim()), networks.bitcoin); return true; }
+            try { return bip32.fromBase58(toXpub(value.trim()), networks.bitcoin).isNeutered() || "Use the xpub, not the xprv"; }
             catch { return "Not a valid mainnet extended public key"; }
         },
     })).trim();
@@ -538,42 +639,86 @@ async function exportPsbts(chain: ChainProfile, plan: PlannedTx[], report: strin
     }
 }
 
-async function signHot(chain: ChainProfile, descriptor: Descriptor, plan: PlannedTx[], report: string, makeDir: () => string): Promise<void> {
-    console.log();
-    danger("DANGER: hot wallet signing");
-    danger("Your seed words are about to be typed into this computer. Any malware on it can steal");
-    danger("every coin these words control, on both chains. Prefer the PSBT option on an offline signer.");
-    danger("Seed words and passphrases are kept in memory only and never written to disk.");
-    if (!await confirm({ message: "I understand the risk. Continue?", default: false })) throw new RetryPlan();
-
-    const signers = new Map<number, BIP32Interface>();
-    while (signers.size < descriptor.threshold) {
-        const label = descriptor.threshold > 1 ? ` (${signers.size + 1} of ${descriptor.threshold})` : "";
-        const words = await password({
-            message: `Seed words${label}:`,
-            mask: "*",
-            validate: value => mnemonicProblem(value) ?? true,
-        });
+// Asks for one more signing key: seed words, an xprv or WIF private keys.
+async function askSigner(descriptor: Descriptor): Promise<{ signer: KeySigner; label: string }> {
+    const kind = await select({
+        message: "Which key do you want to sign with?",
+        choices: [
+            { name: "Seed words (+ passphrase)", value: "seed" },
+            { name: "Extended private key (xprv/yprv/zprv)", value: "xprv" },
+            { name: "WIF private key(s), one per address", value: "wif" },
+        ],
+    });
+    if (kind === "seed") {
+        const words = await password({ message: "Seed words:", mask: "*", validate: value => mnemonicProblem(value) ?? true });
         const passphrase = await password({ message: "BIP39 passphrase (leave empty if none):", mask: "*" });
         const root = rootFromMnemonic(words, passphrase);
-        const matched = matchKeys(descriptor, root).filter(k => !signers.has(k));
-        if (matched.length === 0) {
-            warn(`Seed with fingerprint ${root.fingerprint.toString("hex")} does not match any unused key in the descriptor.`);
+        const fingerprint = root.fingerprint.toString("hex");
+        if (matchKeys(descriptor, root).length === 0) {
+            warn(`Seed with fingerprint ${fingerprint} does not match any key in the descriptor.`);
             warn("A wrong or missing passphrase produces a different fingerprint.");
-            if (!await confirm({ message: "Try again?", default: true })) throw new Error("Aborted: no matching seed");
+        }
+        return { signer: rootSigner(descriptor, root), label: `seed [${fingerprint}]` };
+    }
+    if (kind === "xprv") {
+        const parse = (value: string) => {
+            const node = bip32.fromBase58(toXpub(value.trim()), networks.bitcoin);
+            if (node.isNeutered()) throw new Error("That is a public key; paste the private one");
+            return node;
+        };
+        const text = await password({
+            message: "Extended private key:",
+            mask: "*",
+            validate: value => { try { parse(value); return true; } catch (e) { return (e as Error).message ?? "Not a valid mainnet extended private key"; } },
+        });
+        return { signer: xprvSigner(descriptor, parse(text)), label: "extended private key" };
+    }
+    const text = await password({
+        message: "WIF private key(s), separated by spaces:",
+        mask: "*",
+        validate: value => { try { parseWifs(value); return true; } catch (e) { return (e as Error).message; } },
+    });
+    const pairs = parseWifs(text);
+    return { signer: wifSigner(pairs), label: `${pairs.length} WIF key(s)` };
+}
+
+async function signHot(chain: ChainProfile, descriptor: Descriptor, plan: PlannedTx[], report: string, makeDir: () => string): Promise<void> {
+    const signers: KeySigner[] = [];
+    const pasted = descriptorSigner(descriptor);
+    if (pasted) signers.push(pasted);
+    let missing = unsignedCoins(descriptor, plan, signers);
+    console.log();
+    danger("DANGER: hot wallet signing");
+    if (missing.length > 0) {
+        danger("Your private keys are about to be typed into this computer. Any malware on it can steal");
+        danger("every coin these keys control, on both chains. Prefer the PSBT option on an offline signer.");
+        danger("Seed words, passphrases and private keys are kept in memory only and never written to disk.");
+    } else {
+        danger("This signs with the private key(s) you pasted. They are kept in memory only and never written to disk.");
+        danger("Any malware on this computer can steal the coins they control. Prefer the PSBT option on an offline signer.");
+    }
+    if (!await confirm({ message: "I understand the risk. Continue?", default: false })) throw new RetryPlan();
+
+    while (missing.length > 0) {
+        const total = plan.reduce((n, tx) => n + tx.coins.length, 0);
+        info(`${missing.length} of ${total} coin(s) still need ${descriptor.threshold > 1 ? `${descriptor.threshold} signatures` : "a key"}.`);
+        const { signer, label } = await askSigner(descriptor);
+        const controls = plan.some(tx => tx.coins.some(coin => descriptor.derive(coin.branch, coin.index).keys.some((d, k) => signer(k, d))));
+        if (controls) {
+            info(`  Using ${label}.`);
+            signers.push(signer);
+            missing = unsignedCoins(descriptor, plan, signers);
             continue;
         }
-        for (const k of matched) {
-            if (signers.size < descriptor.threshold) signers.set(k, root);
-        }
-        info(`  Matched key [${root.fingerprint.toString("hex")}]`);
+        warn(`The ${label} does not control any of the coins being moved.`);
+        if (!await confirm({ message: "Try another key?", default: true })) throw new Error("Aborted: no matching key");
     }
 
     let transactions;
     try {
         transactions = signPlan(descriptor, plan, signers, chain.sighash);
     } finally {
-        signers.clear();
+        signers.length = 0;
     }
     const dir = makeDir();
     writeNew(path.join(dir, "raw-txs.txt"), transactions.map(tx => tx.toHex()).join("\n") + "\n");
@@ -588,14 +733,22 @@ async function signHot(chain: ChainProfile, descriptor: Descriptor, plan: Planne
     }
 }
 
-// Scans, selects, plans and signs on one chain. Returns the outpoints that were moved.
-async function runChain(chain: ChainProfile, descriptor: Descriptor, options: WizardOptions, preselected?: Set<string>): Promise<Set<string>> {
+// Scans, selects, plans and signs on one chain. Returns the outpoints that were moved and,
+// when the source was a bare key, the descriptor it resolved to.
+async function runChain(
+    chain: ChainProfile, candidates: Descriptor[], options: WizardOptions, preselected?: Set<string>,
+): Promise<{ moved: Set<string>; descriptor?: Descriptor }> {
     let answers = chain === BIP110 ? options.bip110 : options.bitcoin;
     const backend = await askBackend(chain, options, answers);
+    const descriptor = await resolveSource(chain, candidates, backend, options, answers);
+    if (!descriptor) {
+        warn(`None of this key's address types has been used on the ${chain.name} chain.`);
+        return { moved: new Set() };
+    }
     const coins = await obtainCoins(chain, descriptor, backend, options, answers);
     if (coins.length === 0) {
         warn(`No coins found for this descriptor on the ${chain.name} chain.`);
-        return new Set();
+        return { moved: new Set(), descriptor };
     }
     const total = coins.reduce((s, c) => s + c.value, 0);
     info(`${coins.length} coin(s), ${formatBtc(total)} BTC in total on ${chain.name} (wallet ${walletFingerprints(descriptor)})\n`);
@@ -611,26 +764,23 @@ async function runChain(chain: ChainProfile, descriptor: Descriptor, options: Wi
             console.log("\n" + report + "\n");
             if (!await confirmUnlessYes(options, "Create these transactions?")) throw new RetryPlan();
 
-            const canSignHot = descriptor.keys.every(k => k.hasOrigin);
-            if (answers.sign === "hot" && !canSignHot) {
-                throw flagError(flagName(chain, "sign"), "hot signing needs key origins ([fingerprint/path]) in the descriptor");
-            }
-            if (answers.sign) fromFlag("How do you want to sign?", answers.sign === "psbt" ? "Export unsigned PSBTs" : "Type seed words + passphrase here");
+            if (answers.sign) fromFlag("How do you want to sign?", answers.sign === "psbt" ? "Export unsigned PSBTs" : "Sign here with private keys");
             const method = answers.sign ?? await select({
                 message: "How do you want to sign?",
                 choices: [
                     { name: "Export unsigned PSBTs (recommended)", value: "psbt" },
                     {
-                        name: chalk.red("Type seed words + passphrase here (hot wallet, dangerous)"),
+                        name: chalk.red(descriptor.keys.some(k => k.secret) ?
+                            "Sign here with the private key(s) you pasted (hot wallet, dangerous)" :
+                            "Sign here with seed words, xprv or WIF (hot wallet, dangerous)"),
                         value: "hot",
-                        disabled: canSignHot ? false : "(descriptor has no key origin [fingerprint/path])",
                     },
                 ],
             });
             const makeDir = () => createOutputDir(chain, options, descriptor);
             if (method === "psbt") await exportPsbts(chain, plan, report, makeDir);
             else await signHot(chain, descriptor, plan, report, makeDir);
-            return new Set(plan.flatMap(tx => tx.coins.map(outpoint)));
+            return { moved: new Set(plan.flatMap(tx => tx.coins.map(outpoint))), descriptor };
         } catch (error) {
             if (!(error instanceof RetryPlan)) throw error;
             // Flag answers led here, so ask from now on instead of retrying the same answers.
@@ -657,11 +807,38 @@ function warnIfOutputIsEphemeral(options: WizardOptions): void {
     }
 }
 
+const ACKNOWLEDGEMENT = "I UNDERSTAND";
+
+// Shown before anything else. Interactive runs must type the acknowledgement; runs driven
+// only by flags must pass --yolo instead.
+async function acknowledgeRisks(options: WizardOptions): Promise<void> {
+    danger("Read this before you continue");
+    warn("This is experimental software with no warranty. A mistake can lose your coins on either chain.");
+    warn("Privacy: scanning tells the server you choose your IP address and every address of your wallet.");
+    warn("Moving several coins together, or to one address, shows they have one owner on the BIP110 chain.");
+    warn("Replay: Bitcoin (BTC) transactions made here may also be valid on BIP110. Broadcast and confirm");
+    warn("your BIP110 transactions first.");
+    warn("Keys: typing seed words, an xprv or a WIF into an online computer exposes them to any malware");
+    warn("on it. Prefer exporting PSBTs and signing on an offline device.");
+    warn("Nothing is broadcast for you. Check every transaction before you broadcast it.");
+    warn("Scan files, reports and transactions are written to disk; they hold your addresses and balances.");
+    const question = `Type ${ACKNOWLEDGEMENT} to continue:`;
+    if (options.yolo) {
+        fromFlag(question, "--yolo");
+    } else if (!process.stdin.isTTY) {
+        throw new Error(`No terminal to type ${ACKNOWLEDGEMENT} in. Pass --yolo to accept this notice when running with flags only.`);
+    } else {
+        await input({ message: question, validate: value => value.trim() === ACKNOWLEDGEMENT || `Type exactly ${ACKNOWLEDGEMENT}, or press Ctrl+C to quit` });
+    }
+    console.log();
+}
+
 export async function runWizard(options: WizardOptions): Promise<void> {
     console.log(chalk.bold("\nsplit-bip110: move your coins on the BIP110 chain without replaying them on BTC\n"));
+    await acknowledgeRisks(options);
     warnIfOutputIsEphemeral(options);
-    const descriptor = await askDescriptor(undefined, options.descriptor ? { text: options.descriptor, flag: "--descriptor" } : undefined);
-    const moved = await runChain(BIP110, descriptor, options);
+    const candidates = await askSource(options.descriptor);
+    const { moved, descriptor } = await runChain(BIP110, candidates, options);
 
     console.log();
     const question = "Also check whether the same coins exist on Bitcoin (BTC) and move them to a new wallet?";
@@ -675,5 +852,5 @@ export async function runWizard(options: WizardOptions): Promise<void> {
     warn("and wait for them to confirm before broadcasting these, or the BTC transactions could be replayed");
     warn("on BIP110 and move those coins too.");
     console.log();
-    await runChain(BITCOIN, descriptor, options, moved);
+    await runChain(BITCOIN, descriptor ? [descriptor] : candidates, options, moved);
 }

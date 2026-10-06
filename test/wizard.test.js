@@ -3,16 +3,17 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const bip39 = require("bip39");
+const bs58check = require("bs58check").default ?? require("bs58check");
 const ecc = require("tiny-secp256k1");
 const { ECPairFactory } = require("ecpair");
 const { Transaction, payments, networks, script: bscript } = require("bitcoinjs-lib");
 const { bip32 } = require("../dist/bip32");
-const { parseDescriptor } = require("../dist/wizard/descriptor");
-const { scanDescriptor, writeScanFile, findLatestScan } = require("../dist/wizard/scan");
+const { parseDescriptor, toXpub, keyCandidates } = require("../dist/wizard/descriptor");
+const { scanDescriptor, writeScanFile, findLatestScan, hasReceiveHistory } = require("../dist/wizard/scan");
 const { buildPlan, groupCoins, linkageWarnings, estimateVsize, verifyParent } = require("../dist/wizard/builder");
 const { assertChain } = require("../dist/wizard/backend");
 const { BIP110, BITCOIN } = require("../dist/wizard/chain");
-const { matchKeys, rootFromMnemonic, signPlan, mnemonicProblem } = require("../dist/wizard/hot-signer");
+const { matchKeys, rootFromMnemonic, signPlan, mnemonicProblem, descriptorSigner, wifSigner, xprvSigner, parseWifs, unsignedCoins } = require("../dist/wizard/hot-signer");
 const { unifiedSighash, SigVersion } = require("../dist/helper/unified-sighash");
 const { UTXOHelper } = require("../dist/helper/utxo-helper");
 
@@ -383,6 +384,128 @@ function coinFor(descriptor, branch, index, value, txid = "ab".repeat(32), vout 
         assert.deepStrictEqual(plan.map(t => t.address), [target.derive(0, 4).address, target.derive(0, 5).address]);
         assert.deepStrictEqual(plan.map(t => t.addressIndex), [4, 5]);
         assert.deepStrictEqual(linkageWarnings(plan, destination), []);
+    });
+
+    await test("bare xpub stands for every common single-sig type", () => {
+        const root = rootOf(ABANDON);
+        const account = root.derivePath("m/84'/0'/0'").neutered();
+        const kinds = keyCandidates(account.toBase58()).map(d => d.kind);
+        assert.deepStrictEqual(kinds, ["wpkh", "sh-wpkh", "pkh", "tr"]);
+        const zpub = "zpub6rFR7y4Q2AijBEqTUquhVz398htDFrtymD9xYYfG1m4wAcvPhXNfE3EfH1r1ADqtfSdVCToUG868RvUUkgDKf31mGDtKsAYz2oz2AGutZYs";
+        const [wpkh] = keyCandidates(zpub);
+        assert.strictEqual(keyCandidates(zpub).length, 1);
+        assert.strictEqual(toXpub(zpub), account.toBase58());
+        assert.strictEqual(wpkh.derive(0, 0).address, "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu");
+        assert.deepStrictEqual(keyCandidates(`[${root.fingerprint.toString("hex")}/49h/0h/0h]ypub6Ww3ibxVfGzLrAH1PNcjyAWenMTbbAosGNB6VvmSEgytSER9azLDWCxoJwW7Ke7icmizBMXrzBx9979FfaHxHcrArf3zbeJJJUZPf663zsP`).map(d => d.kind), ["sh-wpkh"]);
+        assert.strictEqual(keyCandidates(singleSig("wpkh", 84).descriptor.text), undefined);
+        assert.throws(() => keyCandidates("xpub123"), /extended key/);
+    });
+
+    await test("receive history probe tells which type an xpub was used with", async () => {
+        const account = rootOf(ABANDON).derivePath("m/84'/0'/0'").neutered().toBase58();
+        const [wpkh, shWpkh] = keyCandidates(account);
+        assert.strictEqual(await hasReceiveHistory(wpkh, fakeBackend(wpkh, {}, ["0/13"]), 20), true);
+        assert.strictEqual(await hasReceiveHistory(wpkh, fakeBackend(wpkh, {}, ["0/20"]), 20), false);
+        const unused = fakeBackend(shWpkh, {});
+        assert.strictEqual(await hasReceiveHistory(shWpkh, unused, 20), false);
+        assert.strictEqual(unused.calls.hasHistory, 20);
+    });
+
+    for (const [kind, purpose] of [["wpkh", 84], ["sh-wpkh", 49], ["pkh", 44], ["tr", 86]]) {
+        await test(`hot signing a bare ${kind} xpub assumes the standard account path`, () => {
+            const root = rootOf(ABANDON, "secret");
+            const account = root.derivePath(`m/${purpose}'/0'/1'`).neutered().toBase58();
+            const descriptor = keyCandidates(account).find(d => d.kind === kind);
+            assert.deepStrictEqual(matchKeys(descriptor, root), [0]);
+            assert.deepStrictEqual(matchKeys(descriptor, rootOf(ABANDON)), []);
+            const other = keyCandidates(account).find(d => d.kind !== kind);
+            assert.ok(other);
+            assert.deepStrictEqual(matchKeys(other, root), []);
+            if (kind === "pkh") return; // legacy inputs need parent transactions, covered above
+            const coins = [coinFor(descriptor, 0, 2, 100000, "0a".repeat(32), 1), coinFor(descriptor, 1, 5, 200000, "0b".repeat(32), 0)];
+            const unified = buildPlan(descriptor, groupCoins(coins, "consolidate"), { kind: "address", address: DEST }, 3, new Map());
+            verifyInputs(descriptor, unified, signPlan(descriptor, unified, new Map([[0, root]])));
+            const standard = buildPlan(descriptor, groupCoins(coins, "consolidate"), { kind: "address", address: DEST }, 3, new Map(), "standard");
+            verifyStandard(descriptor, standard, signPlan(descriptor, standard, new Map([[0, root]]), "standard"));
+        });
+    }
+
+    function signBoth(descriptor, coins, signers) {
+        const unified = buildPlan(descriptor, groupCoins(coins, "consolidate"), { kind: "address", address: DEST }, 3, new Map());
+        verifyInputs(descriptor, unified, signPlan(descriptor, unified, signers));
+        const standard = buildPlan(descriptor, groupCoins(coins, "consolidate"), { kind: "address", address: DEST }, 3, new Map(), "standard");
+        verifyStandard(descriptor, standard, signPlan(descriptor, standard, signers, "standard"));
+    }
+
+    await test("xprv source keeps the private key out of the descriptor text", () => {
+        const root = rootOf(ABANDON);
+        const account = root.derivePath("m/84'/0'/0'");
+        const fromXpub = keyCandidates(account.neutered().toBase58());
+        const fromXprv = keyCandidates(account.toBase58());
+        assert.deepStrictEqual(fromXprv.map(d => d.text), fromXpub.map(d => d.text));
+        assert.deepStrictEqual(fromXprv.map(d => d.id), fromXpub.map(d => d.id));
+        assert.ok(!fromXprv.some(d => d.text.includes("prv")));
+        assert.strictEqual(descriptorSigner(fromXpub[0]), undefined);
+        const zprvData = Buffer.from(bs58check.decode(account.toBase58()));
+        zprvData.writeUInt32BE(0x04b2430c, 0);
+        const zprv = bs58check.encode(zprvData);
+        assert.ok(zprv.startsWith("zprv"));
+        assert.deepStrictEqual(keyCandidates(zprv).map(d => d.text), [fromXpub[0].text]);
+        const full = `wpkh([${root.fingerprint.toString("hex")}/84h/0h/0h]${account.toBase58()}/<0;1>/*)`;
+        const descriptor = parseDescriptor(full);
+        assert.strictEqual(descriptor.text, singleSig("wpkh", 84).descriptor.text);
+        assert.throws(() => parseDescriptor(`${full}#qqqqqqqq`), /checksum/);
+        const wpkh = fromXprv[0];
+        signBoth(wpkh, [coinFor(wpkh, 0, 2, 100000, "0a".repeat(32), 1), coinFor(wpkh, 1, 5, 200000, "0b".repeat(32))], [descriptorSigner(wpkh)]);
+    });
+
+    await test("WIF source is a single address of each common type", async () => {
+        const pair = ECPair.fromPrivateKey(Buffer.alloc(32, 9));
+        const wif = pair.toWIF();
+        const candidates = keyCandidates(wif);
+        assert.deepStrictEqual(candidates.map(d => d.kind), ["wpkh", "sh-wpkh", "pkh", "tr"]);
+        const [wpkh, shWpkh, , tr] = candidates;
+        assert.ok(!wpkh.ranged);
+        assert.ok(wpkh.text.includes(pair.publicKey.toString("hex")) && !wpkh.text.includes(wif));
+        assert.deepStrictEqual(wpkh.text, keyCandidates(pair.publicKey.toString("hex"))[0].text);
+        assert.strictEqual(wpkh.derive(0, 0).address, payments.p2wpkh({ pubkey: pair.publicKey }).address);
+        assert.throws(() => wpkh.derive(0, 1), /out of range/);
+        const backend = fakeBackend(wpkh, { "0/0": [{ txid: "01".repeat(32), vout: 0, value: 5000, confirmed: true }] });
+        const scan = await scanDescriptor(wpkh, backend, { gapLimit: 20 });
+        assert.strictEqual(scan.coins.length, 1);
+        assert.strictEqual(backend.calls.hasHistory, 1);
+        assert.strictEqual(await hasReceiveHistory(shWpkh, fakeBackend(shWpkh, {}), 20), false);
+        for (const d of [wpkh, shWpkh, tr]) signBoth(d, [coinFor(d, 0, 0, 100000)], [descriptorSigner(d)]);
+        const uncompressed = ECPair.fromPrivateKey(Buffer.alloc(32, 9), { compressed: false }).toWIF();
+        assert.throws(() => keyCandidates(uncompressed), /Uncompressed/);
+        assert.throws(() => parseWifs(uncompressed), /Uncompressed/);
+    });
+
+    await test("signing with WIFs covers only the coins they belong to", () => {
+        const { root, descriptor } = singleSig("wpkh", 84);
+        const coins = [coinFor(descriptor, 0, 2, 100000, "0a".repeat(32)), coinFor(descriptor, 1, 5, 200000, "0b".repeat(32))];
+        const wifOf = (branch, index) => ECPair.fromPrivateKey(root.derivePath(`m/84'/0'/0'/${branch}/${index}`).privateKey).toWIF();
+        const plan = buildPlan(descriptor, groupCoins(coins, "separate"), { kind: "address", address: DEST }, 3, new Map());
+        const one = [wifSigner(parseWifs(wifOf(0, 2)))];
+        assert.deepStrictEqual(unsignedCoins(descriptor, plan, one).map(c => c.index), [5]);
+        assert.throws(() => signPlan(descriptor, plan, one), /Need 1 signing key/);
+        signBoth(descriptor, coins, [wifSigner(parseWifs(`${wifOf(0, 2)}, ${wifOf(1, 5)}`))]);
+    });
+
+    await test("signing with an account or master xprv", () => {
+        const root = rootOf(ABANDON);
+        const account = root.derivePath("m/86'/0'/0'");
+        const bare = keyCandidates(account.neutered().toBase58()).find(d => d.kind === "tr");
+        const coins = d => [coinFor(d, 0, 1, 100000), coinFor(d, 1, 3, 100000, "cd".repeat(32))];
+        signBoth(bare, coins(bare), [xprvSigner(bare, account)]);
+        const { descriptor } = singleSig("tr", 86);
+        signBoth(descriptor, coins(descriptor), [xprvSigner(descriptor, root)]);
+        assert.strictEqual(xprvSigner(descriptor, root.derivePath("m/84'/0'/0'"))(0, descriptor.derive(0, 0).keys[0]), undefined);
+        const { roots, descriptor: multi } = multisig();
+        const keyOf = i => roots[i].derivePath("m/48'/0'/0'/2'");
+        signBoth(multi, coins(multi), [xprvSigner(multi, keyOf(2)), xprvSigner(multi, keyOf(0))]);
+        assert.strictEqual(unsignedCoins(multi, buildPlan(multi, groupCoins(coins(multi), "separate"), { kind: "address", address: DEST }, 1, new Map()),
+            [xprvSigner(multi, keyOf(1))]).length, 2);
     });
 
     console.log(`\n${pass} wizard tests passed.`);

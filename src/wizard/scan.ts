@@ -52,6 +52,7 @@ async function collectUnspent(descriptor: Descriptor, backend: Backend, branch: 
 }
 
 // Walks one branch from `start` until `gapLimit` consecutive addresses have no history.
+// A descriptor of single keys has one address, so only index 0 is checked.
 async function scanBranch(
     descriptor: Descriptor, backend: Backend, branch: number, start: number, options: Required<Omit<ScanOptions, "onProgress">> & ScanOptions,
 ): Promise<{ coins: Coin[]; lastUsed: number; checked: number }> {
@@ -61,15 +62,16 @@ async function scanBranch(
     let checked = 0;
     let index = start;
     const step = descriptor.branchStep(branch);
-    while (emptyRun < options.gapLimit) {
-        const batch = Array.from({ length: options.concurrency }, (_, i) => index + i);
+    const gapLimit = descriptor.ranged ? options.gapLimit : 1;
+    while (emptyRun < gapLimit) {
+        const batch = Array.from({ length: descriptor.ranged ? options.concurrency : 1 }, (_, i) => index + i);
         options.onProgress?.(`Checking /${step}/${batch[0]}-${batch[batch.length - 1]} (gap ${emptyRun}/${options.gapLimit}, ${coins.length} coins so far)`);
         const used = await Promise.all(batch.map(i => {
             const derived = descriptor.derive(branch, i);
             return backend.hasHistory(derived.address, derived.output);
         }));
         const usedIndexes: number[] = [];
-        for (let i = 0; i < batch.length && emptyRun < options.gapLimit; i++) {
+        for (let i = 0; i < batch.length && emptyRun < gapLimit; i++) {
             checked++;
             if (used[i]) {
                 emptyRun = 0;
@@ -82,9 +84,25 @@ async function scanBranch(
         for (const found of await Promise.all(usedIndexes.map(i => collectUnspent(descriptor, backend, branch, i)))) {
             coins.push(...found);
         }
-        index += options.concurrency;
+        index += batch.length;
+        if (!descriptor.ranged) break;
     }
     return { coins, lastUsed, checked };
+}
+
+// True when one of the first `gapLimit` receive addresses has on-chain history. Used to tell
+// which script type a bare key was used with.
+export async function hasReceiveHistory(descriptor: Descriptor, backend: Backend, gapLimit = 20, concurrency = 5): Promise<boolean> {
+    if (!descriptor.ranged) gapLimit = 1;
+    for (let start = 0; start < gapLimit; start += concurrency) {
+        const batch = Array.from({ length: Math.min(concurrency, gapLimit - start) }, (_, i) => start + i);
+        const used = await Promise.all(batch.map(i => {
+            const derived = descriptor.derive(0, i);
+            return backend.hasHistory(derived.address, derived.output);
+        }));
+        if (used.some(Boolean)) return true;
+    }
+    return false;
 }
 
 // Full scan when `previous` is undefined. Otherwise a refresh: re-checks the addresses
@@ -94,6 +112,8 @@ export async function scanDescriptor(
 ): Promise<ScanResult> {
     const settings = { gapLimit: options.gapLimit ?? 20, concurrency: options.concurrency ?? 5, ...options };
     if (!Number.isSafeInteger(settings.gapLimit) || settings.gapLimit < 1) throw new Error("gap limit must be a positive integer");
+    // A single-key descriptor has one address, so a refresh is the same as a full scan.
+    if (!descriptor.ranged) previous = undefined;
     const coins: Coin[] = [];
     const lastUsed: number[] = [];
     let addressesChecked = 0;

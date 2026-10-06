@@ -70,7 +70,8 @@ function chainAnswers(opts: Record<string, any>, prefix: "" | "btc"): ChainAnswe
 }
 
 program
-    .option("--descriptor <descriptor>", "output descriptor of the wallet holding the coins")
+    .option("--descriptor <descriptor>", "output descriptor, xpub, xprv or WIF of the wallet holding the coins")
+    .option("--yolo", "accept the opening risk notice without typing I UNDERSTAND (needed when running with flags only)")
     .option("-y, --yes", "accept the privacy notice, privacy warnings and confirmations without asking (never the hot wallet warning)")
     .option("--btc", "also run the Bitcoin (BTC) step without asking")
     .option("--no-btc", "skip the Bitcoin (BTC) step without asking")
@@ -83,11 +84,12 @@ addChainOptions(program, "btc", "Bitcoin");
 program
     .addHelpText("after", `
 Every question can be answered with a flag; questions without a flag are still asked.
-Seed words and passphrases are never accepted as flags.
+Seed words and passphrases are never accepted as flags. A private key passed in --descriptor
+ends up in your shell history; paste it at the prompt instead.
 
 Example (non-interactive BIP110 split to PSBTs, then stop):
   split-bip110 --descriptor "wpkh([fingerprint/84h/0h/0h]xpub.../<0;1>/*)" --scan full --coins all \\
-    --grouping separate --dest-xpub zpub... --fee-rate 2 --sign psbt --no-btc --yes`)
+    --grouping separate --dest-xpub zpub... --fee-rate 2 --sign psbt --no-btc --yes --yolo`)
     .action(async opts => {
         if (opts.destType && !opts.destXpub) program.error("--dest-type only applies to --dest-xpub.");
         if (opts.btcDestType && !opts.btcDestXpub) program.error("--btc-dest-type only applies to --btc-dest-xpub.");
@@ -95,6 +97,7 @@ Example (non-interactive BIP110 split to PSBTs, then stop):
         await runWizard({
             descriptor: opts.descriptor,
             yes: !!opts.yes,
+            yolo: !!opts.yolo,
             // Commander sets btc to true by default because of --no-btc; only explicit flags count.
             btc: program.getOptionValueSource("btc") === "cli" ? opts.btc : undefined,
             bip110: chainAnswers(opts, ""),

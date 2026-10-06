@@ -15,9 +15,9 @@ To check your transactions, you can verify, for example, they are **valid** on B
 
 ## Usage
 
-Download the binary for your platform from the [releases](../../releases) page and run it with no arguments. It walks you through the split:
+Download the binary for your platform from the [releases](../../releases) page and run it with no arguments. It first shows a notice about the risks (lost coins, privacy, replay, typing keys on an online computer) and asks you to type `I UNDERSTAND`. Then it walks you through the split:
 
-1. **Descriptor.** Paste the output descriptor of the wallet holding the coins (in Sparrow: *Settings → Export → Output Descriptor*). Supported: `wpkh(KEY)`, `tr(KEY)`, `sh(wpkh(KEY))`, `pkh(KEY)` and `wsh(sortedmulti(M,KEY,...))`, with mainnet xpubs. Multipath `/<0;1>/*` descriptors scan receive and change. A receive-only `/0/*` descriptor also scans the matching `/1/*` change branch.
+1. **Descriptor.** Paste the output descriptor of the wallet holding the coins (in Sparrow: *Settings → Export → Output Descriptor*). Supported: `wpkh(KEY)`, `tr(KEY)`, `sh(wpkh(KEY))`, `pkh(KEY)` and `wsh(sortedmulti(M,KEY,...))`, with mainnet xpubs. Multipath `/<0;1>/*` descriptors scan receive and change. A receive-only `/0/*` descriptor also scans the matching `/1/*` change branch. You can also paste a bare key: an account xpub/ypub/zpub, an xprv/yprv/zprv, a WIF private key or a hex public key. A zpub is Native SegWit and a ypub is Nested SegWit, while an xpub (or a WIF) could be any type, so the tool checks the first receive addresses of Native SegWit, Nested SegWit, Legacy and Taproot and uses the type that has history (it asks if more than one does; run again with the same key to move the others). A WIF is a single address, so only that address is checked. Descriptors may hold xprvs and WIFs too. Private keys are kept in memory only, hidden on screen, never written to disk (scan files and reports hold the public form) and can be used to sign at the end. Uncompressed keys are not supported.
 2. **Server.** Choose where to read the BIP110 chain: [mempool.guide](https://mempool.guide)'s Esplora API, mempool.guide's Electrum server (`ssl://electrs.orangepill.ovh:50002`), or your own Esplora or Electrum server (`ssl://host:50002` or `tcp://host:50001`). Before using a server, the tool checks that its block at height 961,635 matches the expected chain, so a BTC server is refused for BIP110 and the other way around.
 3. **Scan.** The tool derives your addresses locally and asks the server about each one until it finds 20 unused addresses in a row (`--gap-limit` changes this).
 4. **Coins.** Pick the coins to split. By default each coin gets its own transaction (coins on the same address stay together). You can also consolidate everything into one transaction.
@@ -25,7 +25,7 @@ Download the binary for your platform from the [releases](../../releases) page a
 6. **Fee rate.** Suggested from the server when available.
 7. **Signing.** Either:
    - **Export unsigned PSBTs** (recommended): writes `tx-NNN.psbt`, `unsigned-psbts.txt` and `tx-report.txt`. Each input requests sighash type `0x21`, so the signer must support BIP110's unified sighash; regular and hardware wallets do not.
-   - **Type seed words and passphrase** (hot wallet, dangerous): the tool checks the seed against the descriptor's key fingerprints and signs locally, writing `raw-txs.txt` and `tx-report.txt`. Multisig asks for as many seeds as the threshold. Seed words and passphrases stay in memory only and are never written to disk. Requires key origins (`[fingerprint/path]`) in the descriptor.
+   - **Sign here with private keys** (hot wallet, dangerous): signs locally with the xprv or WIF you pasted in step 1, or asks for keys until every coin can be signed: seed words and passphrase, an xprv/yprv/zprv (master or account level) or WIF private keys (one per address). It writes `raw-txs.txt` and `tx-report.txt`. Multisig asks for as many keys as the threshold. Seed words, passphrases and private keys stay in memory only and are never written to disk. Seed words need key origins (`[fingerprint/path]`) in the descriptor, or a single-sig account xpub at its type's standard path (`m/84'/0'/n'`, `m/49'/0'/n'`, `m/44'/0'/n'` or `m/86'/0'/n'`).
 
 8. **Bitcoin (optional).** Finally, the tool asks whether to also move the same coins on Bitcoin (BTC) to a new wallet. If you say yes, the same questions repeat for the BTC chain (default servers: mempool.space or Blockstream's Electrum server). Coins you just split on BIP110 that still exist on BTC are preselected. BTC transactions are signed the normal way, so the PSBTs work with Sparrow, hardware wallets and any other PSBT signer.
 
@@ -47,7 +47,9 @@ After each scan the coins are saved to `delete_later_<fingerprints>_<descriptor-
 Every question can be answered with a flag; questions without a flag are still asked. Run `split-bip110 --help` for the full list.
 
 ```
---descriptor <descriptor>        output descriptor of the wallet holding the coins
+--descriptor <descriptor>        output descriptor, xpub, xprv or WIF of the wallet holding the coins
+--yolo                           accept the opening risk notice without typing I UNDERSTAND
+                                 (needed when running with flags only)
 -y, --yes                        accept the privacy notice, privacy warnings and confirmations
 --btc / --no-btc                 run or skip the Bitcoin step without asking
 
@@ -81,10 +83,10 @@ split-bip110 --descriptor "wpkh([fingerprint/84h/0h/0h]xpub.../<0;1>/*)" \
   --esplora https://mempool.guide/api --scan full --coins all --grouping separate \
   --dest-xpub zpub... --fee-rate 2 --sign psbt \
   --btc --btc-esplora https://mempool.space/api --btc-scan full --btc-coins moved --btc-grouping separate \
-  --btc-dest-descriptor "tr([fingerprint/86h/0h/0h]xpub.../<0;1>/*)" --btc-fee-rate 3 --btc-sign psbt --yes
+  --btc-dest-descriptor "tr([fingerprint/86h/0h/0h]xpub.../<0;1>/*)" --btc-fee-rate 3 --btc-sign psbt --yes --yolo
 ```
 
-Seed words and passphrases are never accepted as flags (they would end up in your shell history). With `--sign hot` the tool still asks for them, and the hot wallet warning is shown even with `--yes`. If a flag answer leads to a problem (a coin below the dust limit, or declining a confirmation), the tool falls back to asking the questions. Without a terminal it stops and says which question needs a flag.
+Seed words and passphrases are never accepted as flags (they would end up in your shell history). An xprv or WIF in `--descriptor` works but lands in your shell history too, so the tool warns about it; paste private keys at the prompt instead. With `--sign hot` the tool still asks for them, and the hot wallet warning is shown even with `--yes`. If a flag answer leads to a problem (a coin below the dust limit, or declining a confirmation), the tool falls back to asking the questions. Without a terminal it stops and says which question needs a flag.
 
 ### Docker
 
@@ -94,7 +96,7 @@ A prebuilt image for `linux/amd64`, `linux/arm64` and `linux/arm/v7` is publishe
 docker run --rm -it --user "$(id -u):$(id -g)" -v "$PWD:/data" jaonoctus/split-bip110
 ```
 
-- `-it` is needed for the interactive questions. A fully flag-driven run (see [Options](#options)) also works without it.
+- `-it` is needed for the interactive questions. A fully flag-driven run (see [Options](#options)) also works without it, with `--yolo` to accept the opening notice.
 - The container works in `/data`. **Mount a directory there with `-v`**, or the PSBTs, signed transactions and scan files are deleted with the container; the tool warns at startup when nothing is mounted.
 - `--user` makes the written files belong to you instead of the container's user.
 - Options go after the image name, e.g. `jaonoctus/split-bip110 --electrum ssl://electrs.orangepill.ovh:50002`. The config file mode is `jaonoctus/split-bip110 legacy`, reading `config.toml` from the mounted directory.
