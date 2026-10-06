@@ -8,6 +8,8 @@ const { ECPairFactory } = require("ecpair");
 const { Transaction, payments, networks, script: bscript } = require("bitcoinjs-lib");
 const { bip32 } = require("../dist/bip32");
 const { parseDescriptor } = require("../dist/wizard/descriptor");
+const { assertChain } = require("../dist/wizard/backend");
+const { BIP110, BITCOIN } = require("../dist/wizard/chain");
 
 const ECPair = ECPairFactory(ecc);
 const ABANDON = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
@@ -39,6 +41,27 @@ function singleSig(kind, purpose, mnemonic = ABANDON, passphrase = "", suffix = 
     return { root, descriptor: parseDescriptor(text) };
 }
 
+// In-memory backend: `funded` maps "branch/index" to UTXO lists; `used` lists other addresses with history.
+function fakeBackend(descriptor, funded, used = []) {
+    const byAddress = new Map();
+    for (const [key, utxos] of Object.entries(funded)) {
+        const [branch, index] = key.split("/").map(Number);
+        byAddress.set(descriptor.derive(branch, index).address, utxos);
+    }
+    const history = new Set([...byAddress.keys(), ...used.map(k => { const [b, i] = k.split("/").map(Number); return descriptor.derive(b, i).address; })]);
+    const calls = { hasHistory: 0, listUnspent: 0 };
+    return {
+        calls,
+        label: "fake",
+        async hasHistory(address) { calls.hasHistory++; return history.has(address); },
+        async listUnspent(address) { calls.listUnspent++; return byAddress.get(address) ?? []; },
+        async getRawTransaction() { throw new Error("unused"); },
+        async recommendedFeeRate() { return undefined; },
+        async blockHash() { return "00000000000000000000c705b7a0a847d2713d73da4a1b20cea3dfdd617fa651"; },
+        close() {},
+    };
+}
+
 (async () => {
     await test("BIP84 vector and checksum", () => {
         const { descriptor } = singleSig("wpkh", 84);
@@ -62,6 +85,16 @@ function singleSig(kind, purpose, mnemonic = ABANDON, passphrase = "", suffix = 
         const a = singleSig("wpkh", 84).descriptor;
         const b = parseDescriptor(a.text.split("#")[0].replace(/(\d)h/g, "$1'"));
         assert.strictEqual(a.id, b.id);
+    });
+
+    await test("servers on another chain are refused", async () => {
+        const { descriptor } = singleSig("wpkh", 84);
+        const bip110 = fakeBackend(descriptor, {});
+        await assertChain(bip110, BIP110);
+        await assert.rejects(assertChain(bip110, BITCOIN), /not on the Bitcoin \(BTC\) chain/);
+        const btc = { ...bip110, label: "btc", async blockHash() { return BITCOIN.checkHash; } };
+        await assertChain(btc, BITCOIN);
+        await assert.rejects(assertChain(btc, BIP110), /not on the BIP110 chain/);
     });
 
     console.log(`\n${pass} wizard tests passed.`);
