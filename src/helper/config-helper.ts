@@ -2,7 +2,7 @@ import * as fs from "fs";
 import * as toml from "toml";
 import { Config } from "../model/config";
 import { networks, Network } from "bitcoinjs-lib";
-import { bip32 } from "..";
+import { bip32 } from "../bip32";
 import base58 from "bs58check";
 import { BIP32Interface } from "bip32";
 import { UTXOHelper } from "./utxo-helper";

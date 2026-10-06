@@ -1,15 +1,12 @@
 import * as fs from "fs";
 import * as bitcoin from "bitcoinjs-lib";
-import * as ecc from "tiny-secp256k1";
-import { BIP32Factory, BIP32Interface } from "bip32";
+import { BIP32Interface } from "bip32";
+import { bip32 } from "./bip32";
 import { ConfigHelper } from "./helper/config-helper";
 import { TransactionHelper } from "./helper/transaction-helper";
 import { UTXOPrivkeyHelper } from "./helper/utxo-privkey-helper";
 import { MnemonicsHelper } from "./helper/mnemonics-helper";
 import { Report } from "./model/report";
-
-export const bip32 = BIP32Factory(ecc);
-bitcoin.initEccLib(ecc);
 
 async function main() {
     console.log("Reading config info... ");
