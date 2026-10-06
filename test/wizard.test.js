@@ -8,8 +8,10 @@ const { ECPairFactory } = require("ecpair");
 const { Transaction, payments, networks, script: bscript } = require("bitcoinjs-lib");
 const { bip32 } = require("../dist/bip32");
 const { parseDescriptor } = require("../dist/wizard/descriptor");
+const { scanDescriptor, writeScanFile, findLatestScan } = require("../dist/wizard/scan");
 const { assertChain } = require("../dist/wizard/backend");
 const { BIP110, BITCOIN } = require("../dist/wizard/chain");
+const { UTXOHelper } = require("../dist/helper/utxo-helper");
 
 const ECPair = ECPairFactory(ecc);
 const ABANDON = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
@@ -62,6 +64,10 @@ function fakeBackend(descriptor, funded, used = []) {
     };
 }
 
+function coinFor(descriptor, branch, index, value, txid = "ab".repeat(32), vout = 0) {
+    return { txid, vout, value, address: descriptor.derive(branch, index).address, branch, index, confirmed: true };
+}
+
 (async () => {
     await test("BIP84 vector and checksum", () => {
         const { descriptor } = singleSig("wpkh", 84);
@@ -85,6 +91,71 @@ function fakeBackend(descriptor, funded, used = []) {
         const a = singleSig("wpkh", 84).descriptor;
         const b = parseDescriptor(a.text.split("#")[0].replace(/(\d)h/g, "$1'"));
         assert.strictEqual(a.id, b.id);
+    });
+
+    await test("gap scan finds coins and stops after the gap", async () => {
+        const { descriptor } = singleSig("wpkh", 84);
+        const backend = fakeBackend(descriptor, {
+            "0/0": [{ txid: "01".repeat(32), vout: 1, value: 5000, confirmed: true, blockTime: 1786000000 }],
+            "0/7": [{ txid: "02".repeat(32), vout: 0, value: 7000, confirmed: false }],
+            "1/2": [{ txid: "03".repeat(32), vout: 3, value: 9000, confirmed: true }],
+        }, ["0/3"]);
+        const result = await scanDescriptor(descriptor, backend, { gapLimit: 5, concurrency: 3 });
+        assert.deepStrictEqual(result.coins.map(c => `${c.branch}/${c.index}`), ["0/0", "0/7", "1/2"]);
+        assert.deepStrictEqual(result.lastUsed, [7, 2]);
+
+        // A refresh only re-checks known coin addresses and continues after the last used index.
+        const later = fakeBackend(descriptor, {
+            "0/7": [{ txid: "02".repeat(32), vout: 0, value: 7000, confirmed: true }],
+            "0/9": [{ txid: "04".repeat(32), vout: 0, value: 1000, confirmed: true }],
+        });
+        const refreshed = await scanDescriptor(descriptor, later, { gapLimit: 5, concurrency: 1 }, result);
+        assert.deepStrictEqual(refreshed.coins.map(c => `${c.branch}/${c.index}`), ["0/7", "0/9"]);
+        assert.deepStrictEqual(refreshed.lastUsed, [9, 2]);
+        assert.strictEqual(later.calls.hasHistory, 7 + 5);
+    });
+
+    await test("scan files never overwrite and stay readable by the legacy parser", async () => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), "split-bip110-"));
+        const { descriptor } = singleSig("wpkh", 84);
+        const other = singleSig("tr", 86).descriptor;
+        const scan = { coins: [coinFor(descriptor, 0, 4, 123456789)], lastUsed: [4, -1], addressesChecked: 30 };
+        const now = new Date("2026-10-06T12:00:00Z");
+        const first = writeScanFile(dir, BIP110, descriptor, "fake", scan, now);
+        const second = writeScanFile(dir, BIP110, descriptor, "fake", { ...scan, lastUsed: [5, -1] }, now);
+        const third = writeScanFile(dir, BIP110, other, "fake", { coins: [], lastUsed: [-1, -1], addressesChecked: 0 }, now);
+        assert.notStrictEqual(first, second);
+        assert.ok(path.basename(first).startsWith(`delete_later_73c5da0a_${descriptor.id}_20261006T120000Z`));
+        assert.strictEqual(fs.readdirSync(dir).length, 3);
+
+        const { scan: latest } = findLatestScan(dir, BIP110, descriptor);
+        assert.strictEqual(latest.file, second);
+        assert.deepStrictEqual(latest.lastUsed, [5, -1]);
+        assert.strictEqual(latest.coins[0].value, 123456789);
+        assert.strictEqual(findLatestScan(dir, BIP110, other).scan.file, third);
+
+        // Bitcoin scans of the same descriptor live in their own files and never mix with BIP110 ones.
+        assert.strictEqual(findLatestScan(dir, BITCOIN, descriptor).scan, undefined);
+        const btc = writeScanFile(dir, BITCOIN, descriptor, "fake", { ...scan, lastUsed: [9, -1] }, new Date("2026-10-07T00:00:00Z"));
+        assert.ok(path.basename(btc).startsWith(`delete_later_btc_73c5da0a_${descriptor.id}_`));
+        assert.strictEqual(findLatestScan(dir, BITCOIN, descriptor).scan.file, btc);
+        assert.strictEqual(findLatestScan(dir, BIP110, descriptor).scan.file, second);
+
+        const legacy = new UTXOHelper(first).parse();
+        assert.strictEqual(legacy[0][0].amount, 123456789);
+        assert.strictEqual(legacy[0][0].address, descriptor.derive(0, 4).address);
+    });
+
+    await test("a scan file that names another descriptor's address is rejected", () => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), "split-bip110-"));
+        const { descriptor } = singleSig("wpkh", 84);
+        const file = writeScanFile(dir, BIP110, descriptor, "fake", { coins: [coinFor(descriptor, 0, 1, 1000)], lastUsed: [1, -1], addressesChecked: 1 });
+        fs.chmodSync(file, 0o600);
+        const tampered = fs.readFileSync(file, "utf8").replace(",0/1,", ",0/2,");
+        fs.writeFileSync(file, tampered);
+        const { scan, errors } = findLatestScan(dir, BIP110, descriptor);
+        assert.strictEqual(scan, undefined);
+        assert.match(errors[0], /does not derive/);
     });
 
     await test("servers on another chain are refused", async () => {
