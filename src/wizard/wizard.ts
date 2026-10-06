@@ -94,7 +94,7 @@ async function askDescriptor(message = "Paste the output descriptor of the walle
     let descriptor: Descriptor;
     if (preset) {
         descriptor = parseOrThrow(preset.text, preset.flag);
-        fromFlag(message, descriptor.text.length > 60 ? `${descriptor.text.slice(0, 57)}...` : descriptor.text);
+        fromFlag(message, descriptor.text);
     } else {
         const text = await input({
             message,
@@ -252,25 +252,43 @@ async function selectCoins(
             });
         }
         if (chosen.length === 0) throw flagError(flag, "selects no coins");
-        const total = chosen.reduce((s, c) => s + c.value, 0);
-        fromFlag("Coins:", `${chosen.length} coin(s), ${formatBtc(total)} BTC`);
-        return [...new Set(chosen)];
+        const unique = [...new Set(chosen)];
+        fromFlag("Coins:", coinSummary(unique));
+        printCoins(unique, step);
+        return unique;
     }
     const width = Math.max(...coins.map(c => formatBtc(c.value).length));
-    return checkbox({
+    const selected = await checkbox({
         message: `Select the coins to ${chain === BIP110 ? "split" : "move"} (space toggles, a selects all, enter confirms):`,
         pageSize: 15,
         loop: false,
         required: true,
+        // Once answered, collapse to a summary; the coins are listed one per line below it.
+        theme: { style: { renderSelectedChoices: (choices: ReadonlyArray<{ value: Coin }>) => coinSummary(choices.map(c => c.value)) } },
         choices: coins.map(c => ({
             value: c,
-            name: `${formatBtc(c.value).padStart(width)} BTC  ${c.address}  /${step(c.branch)}/${c.index}` +
+            // Never shortened: the full txid:vout identifies the coin.
+            name: `${formatBtc(c.value).padStart(width)} BTC  ${c.address}  /${step(c.branch)}/${c.index}  ${outpoint(c)}` +
                 (c.confirmed ? "" : chalk.yellow("  unconfirmed")) +
                 (preselected?.has(outpoint(c)) ? chalk.green("  moved on BIP110") : ""),
             checked: preselected?.has(outpoint(c)) ?? false,
-            description: outpoint(c),
         })),
     });
+    printCoins(selected, step);
+    return selected;
+}
+
+function coinSummary(coins: Coin[]): string {
+    return `${coins.length} coin(s), ${formatBtc(coins.reduce((s, c) => s + c.value, 0))} BTC`;
+}
+
+// Keeps the selection visible in the terminal history after the prompt closes.
+function printCoins(coins: Coin[], step: (branch: number) => string): void {
+    const width = Math.max(...coins.map(c => formatBtc(c.value).length));
+    for (const c of coins) {
+        console.log(chalk.dim("  ") + `${formatBtc(c.value).padStart(width)} BTC  ${c.address}  /${step(c.branch)}/${c.index}  ` +
+            chalk.dim(outpoint(c)) + (c.confirmed ? "" : chalk.yellow("  unconfirmed")));
+    }
 }
 
 function toXpub(value: string): string {
@@ -491,6 +509,16 @@ function createOutputDir(chain: ChainProfile, options: WizardOptions, descriptor
     throw new Error("Could not create an output directory");
 }
 
+// Prints each PSBT or transaction so it stays in the terminal history, not only in the output files.
+function printResults(kind: string, items: string[], label: (i: number) => string): void {
+    items.forEach((item, i) => {
+        console.log();
+        console.log(chalk.bold(`${kind} ${i + 1} of ${items.length}`) + chalk.dim(` (${label(i)})`));
+        console.log(item);
+    });
+    console.log();
+}
+
 function writeNew(file: string, content: string | Buffer): void {
     fs.writeFileSync(file, content, { flag: "wx", mode: 0o600 });
 }
@@ -501,6 +529,7 @@ async function exportPsbts(chain: ChainProfile, plan: PlannedTx[], report: strin
     writeNew(path.join(dir, "unsigned-psbts.txt"), plan.map(tx => tx.psbt.toBase64()).join("\n") + "\n");
     writeNew(path.join(dir, "tx-report.txt"), report + "\n");
     info(`Wrote ${plan.length} unsigned PSBT(s) to ${dir}`);
+    printResults("Unsigned PSBT (base64)", plan.map(tx => tx.psbt.toBase64()), i => `tx-${String(i + 1).padStart(3, "0")}.psbt`);
     if (chain.sighash === "unified") {
         warn("Each input asks for sighash type 0x21 (SIGHASH_ALL|SIGHASH_UNIFIED). Only a BIP110-aware signer");
         warn("can produce these signatures; regular wallets and hardware wallets will refuse or sign for BTC instead.");
@@ -550,6 +579,7 @@ async function signHot(chain: ChainProfile, descriptor: Descriptor, plan: Planne
     writeNew(path.join(dir, "raw-txs.txt"), transactions.map(tx => tx.toHex()).join("\n") + "\n");
     writeNew(path.join(dir, "tx-report.txt"), report + "\n");
     info(`Wrote ${transactions.length} signed transaction(s) to ${path.join(dir, "raw-txs.txt")}`);
+    printResults("Signed transaction (hex)", transactions.map(tx => tx.toHex()), i => `txid ${transactions[i].getId()}`);
     if (chain === BIP110) {
         info(`Nothing was broadcast. Check each transaction, e.g. paste it into ${BIP110.explorerTx}`);
         info(`(it should be valid there and invalid on ${BITCOIN.explorerTx}), then broadcast it.`);
