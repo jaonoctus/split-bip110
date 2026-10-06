@@ -246,8 +246,10 @@ async function askBackend(chain: ChainProfile, options: WizardOptions, answers: 
     const kind = await select({
         message: `Where should the ${chain.name} chain be read from?`,
         choices: [
-            { name: `${chain.defaultEsploraName} (${chain.defaultEsplora})`, value: "default" },
+            // Electrum first: one connection for the whole scan, instead of an HTTP request per
+            // address that public Esplora APIs rate-limit.
             { name: `${chain.defaultElectrumName} (${chain.defaultElectrum})`, value: "default-electrum" },
+            { name: `${chain.defaultEsploraName} (${chain.defaultEsplora})`, value: "default" },
             { name: `Another Electrum server on the ${chain.name} chain`, value: "electrum" },
             { name: `Another Esplora API on the ${chain.name} chain`, value: "esplora" },
         ],
