@@ -86,6 +86,28 @@ split-bip110 --descriptor "wpkh([fingerprint/84h/0h/0h]xpub.../<0;1>/*)" \
 
 Seed words and passphrases are never accepted as flags (they would end up in your shell history). With `--sign hot` the tool still asks for them, and the hot wallet warning is shown even with `--yes`. If a flag answer leads to a problem (a coin below the dust limit, or declining a confirmation), the tool falls back to asking the questions. Without a terminal it stops and says which question needs a flag.
 
+### Docker
+
+A prebuilt image for `linux/amd64`, `linux/arm64` and `linux/arm/v7` is published as [`jaonoctus/split-bip110`](https://hub.docker.com/r/jaonoctus/split-bip110):
+
+```bash
+docker run --rm -it --user "$(id -u):$(id -g)" -v "$PWD:/data" jaonoctus/split-bip110
+```
+
+- `-it` is needed for the interactive questions. A fully flag-driven run (see [Options](#options)) also works without it.
+- The container works in `/data`. **Mount a directory there with `-v`**, or the PSBTs, signed transactions and scan files are deleted with the container; the tool warns at startup when nothing is mounted.
+- `--user` makes the written files belong to you instead of the container's user.
+- Options go after the image name, e.g. `jaonoctus/split-bip110 --electrum ssl://electrs.orangepill.ovh:50002`. The config file mode is `jaonoctus/split-bip110 legacy`, reading `config.toml` from the mounted directory.
+
+To build the image yourself instead:
+
+```bash
+docker build -t split-bip110 .
+docker run --rm -it --user "$(id -u):$(id -g)" -v "$PWD:/data" split-bip110
+```
+
+The image is built only from `package.json`, `package-lock.json`, `tsconfig.json` and `src/`, so a `config.toml` with seed words is never copied into it.
+
 ## Config file mode
 
 The original non-interactive flow is still available as `split-bip110 legacy [--config config.toml]`. It reads a UTXO CSV file and the seed words from `config.toml`.

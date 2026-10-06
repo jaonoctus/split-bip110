@@ -112,6 +112,14 @@ program
     .option("-c, --config <file>", "config file", "config.toml")
     .action(opts => runLegacy(opts.config));
 
+// Explicit handlers: as PID 1 in a container the kernel ignores SIGINT/SIGTERM
+// unless the process handles them, so Ctrl+C during a scan would do nothing.
+process.on("SIGINT", () => {
+    console.log(chalk.dim("\nCancelled."));
+    process.exit(130);
+});
+process.on("SIGTERM", () => process.exit(143));
+
 program.parseAsync().catch(error => {
     if (error instanceof Error && error.name === "ExitPromptError") {
         if (!process.stdin.isTTY) {

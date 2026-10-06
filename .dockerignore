@@ -1,0 +1,7 @@
+# Allowlist: only what the build needs. Keeps config.toml (seed words),
+# scan files and generated transactions out of the build context and image.
+*
+!package.json
+!package-lock.json
+!tsconfig.json
+!src/

@@ -610,8 +610,26 @@ async function runChain(chain: ChainProfile, descriptor: Descriptor, options: Wi
     }
 }
 
+// In a container, a working directory on the same filesystem as / is not a mounted volume,
+// so everything written there disappears with the container.
+function warnIfOutputIsEphemeral(options: WizardOptions): void {
+    if (!fs.existsSync("/.dockerenv")) return;
+    try {
+        const root = fs.statSync("/").dev;
+        const dirs = [...new Set([path.resolve(options.scanDir), path.resolve(options.outputDir)])];
+        if (dirs.some(dir => fs.statSync(dir).dev === root)) {
+            warn(chalk.bold("Nothing is mounted for the output: the PSBTs, transactions and scan files this run"));
+            warn(chalk.bold("writes will be lost when the container exits. To keep them, run it with"));
+            warn(chalk.bold(`-v "$PWD:/data" --user "$(id -u):$(id -g)"`));
+        }
+    } catch {
+        // Only a hint; never block the run on it.
+    }
+}
+
 export async function runWizard(options: WizardOptions): Promise<void> {
     console.log(chalk.bold("\nsplit-bip110: move your coins on the BIP110 chain without replaying them on BTC\n"));
+    warnIfOutputIsEphemeral(options);
     const descriptor = await askDescriptor(undefined, options.descriptor ? { text: options.descriptor, flag: "--descriptor" } : undefined);
     const moved = await runChain(BIP110, descriptor, options);
 
