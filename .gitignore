@@ -9,3 +9,6 @@ split-bip110-win.exe
 SHASUMS*
 build-*
 *.csv
+delete_later_*
+split-bip110_*/
+move-btc_*/

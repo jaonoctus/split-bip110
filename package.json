@@ -30,7 +30,7 @@
     "typescript": "5.4.5"
   },
   "pkg": {
-    "scripts": "dist/*.js",
+    "scripts": "dist/**/*.js",
     "assets": "dist/**/*",
     "targets": [
       "node22-linux-x64",
