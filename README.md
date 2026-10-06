@@ -214,8 +214,10 @@ This software comes with no warranty. You are solely responsible for verifying t
 
 If this project helped you earn something and you are feeling grateful, you can share a bit with:
 
-- Lightning: `fiscalhawk44@walletofsatoshi.com`
-- Silent Payments: `sp1qqdx6zdc0guc4ncu2wv74hhy2ql8wnxhas0hl9q8sxdxhz253c6xq5quj7kedy36lfl4yau7cph0dtzxvltzwwdutw4ct5x9clrvpkz8nxv0kpwdt`
+- Lightning: `bip110@ln.jaonoctus.dev` (jaonoctus)
+- Lightning: `fiscalhawk44@walletofsatoshi.com` (otto)
+- Silent Payments: `sp1qq0zfxq2e89mpynlruxx2p5c5hku7kdxq5m202dqrvhnwtksrx4q52q574rvde9dg3hyau35hed95hd7h3kn8sql2fyxgmu6f2pct6zn0pv3r3xhq` (jaonoctus)
+- Silent Payments: `sp1qqdx6zdc0guc4ncu2wv74hhy2ql8wnxhas0hl9q8sxdxhz253c6xq5quj7kedy36lfl4yau7cph0dtzxvltzwwdutw4ct5x9clrvpkz8nxv0kpwdt` (otto)
 - BIP47: `PM8TJgutCtE1GK1Lf6WUTRLzVNcBvNRXjKueKgpQ36dc6Dry3w5oCYz5NEVk7GvNpXAMdrioi6DVytk1P4RBGjXpLw1VFfTm2dNrdtTUWQCQtcjDwPVm` or PayNym: [+otto](https://paynym.rs/+otto)
 - XMR: `84ASExDrrRGBgmYFCzFf6sKK4Q3gwynpzBqp3ZZfNUb4WpbAGJUJ2nrSAEfNLv3FacD5suRMLUzNCAL6XkR7bhe9QKfchu7`
 - Or ask for an address on `cautious_uncrown054@simplelogin.com`.
