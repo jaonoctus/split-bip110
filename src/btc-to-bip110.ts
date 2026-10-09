@@ -16,23 +16,25 @@ export type MissingTx = { txid: string; rawHex: string; inputs: Input[]; coinbas
 type RequiredInput = { spendingTx: string; input: Input };
 
 export type CopyBlocker =
-    | { kind: "spent-input"; spendingTx: string; input: Input; spentBy: string; confirmed?: boolean }
+    | { kind: "spent-input"; spendingTx: string; input: Input; spentBy: string; spentByVin?: number; confirmed?: boolean }
     | { kind: "missing-coinbase"; txid: string };
 
 const btcTx = (txid: string) => `${BITCOIN.explorer}/tx/${txid}`;
-const bip110Tx = (txid: string, vout?: number) => `${BIP110.explorer}/tx/${txid}${vout === undefined ? "" : `#vout=${vout}`}`;
+// anchor highlights one output ("vout") or input ("vin") on the explorer page.
+const bip110Tx = (txid: string, anchor?: "vout" | "vin", index?: number) =>
+    `${BIP110.explorer}/tx/${txid}${anchor && index !== undefined ? `#${anchor}=${index}` : ""}`;
 
 function blockerMessage(blocker: CopyBlocker): string {
     if (blocker.kind === "missing-coinbase") {
         return `Cannot be copied to BIP110: it descends from Bitcoin block reward ${blocker.txid}, mined after the split\n` +
             `  Block reward (BTC): ${btcTx(blocker.txid)}`;
     }
-    const { spendingTx, input, spentBy } = blocker;
+    const { spendingTx, input, spentBy, spentByVin } = blocker;
     return `${blocker.confirmed ? "Cannot be copied to the current BIP110 chain" : "Blocked for now by a BIP110 mempool transaction"}: ` +
         `${spendingTx} needs ${input.txid}:${input.vout}, which is already spent there by ${spentBy}\n` +
         `  BTC transaction:    ${btcTx(spendingTx)}\n` +
-        `  Needed coin:        ${bip110Tx(input.txid, input.vout)}\n` +
-        `  Spent on BIP110 by: ${spentBy === "unknown" ? "unknown transaction" : bip110Tx(spentBy)}`;
+        `  Needed coin:        ${bip110Tx(input.txid, "vout", input.vout)}\n` +
+        `  Spent on BIP110 by: ${spentBy === "unknown" ? "unknown transaction" : bip110Tx(spentBy, "vin", spentByVin)}`;
 }
 
 export class CopyImpossibleError extends Error {
@@ -137,7 +139,7 @@ export async function traceMissingParents(
                         continue;
                     }
                     throw new CopyImpossibleError({ kind: "spent-input", spendingTx: item.spendingTx,
-                        input: item.input, spentBy: result.txid ?? "unknown", confirmed: result.confirmed });
+                        input: item.input, spentBy: result.txid ?? "unknown", spentByVin: result.vin, confirmed: result.confirmed });
                 }
                 checkedOutpoints.add(outpoint);
             }
@@ -243,7 +245,7 @@ function label(target: Target): string {
 }
 
 export type Verdict =
-    | { status: "on-fork"; target: Target; spentBy?: string; confirmed?: boolean }
+    | { status: "on-fork"; target: Target; spentBy?: string; spentByVin?: number; confirmed?: boolean }
     | { status: "copyable"; target: Target; trace: TraceResult }
     | { status: "blocked"; target: Target; blocker: CopyBlocker; message: string }
     | { status: "error"; target: Target; message: string };
@@ -258,7 +260,7 @@ export async function checkTarget(
             if (target.vout === undefined) return { status: "on-fork", target };
             const outspend = await sources.getForkOutspend(target.txid, target.vout);
             return outspend.spent ?
-                { status: "on-fork", target, spentBy: outspend.txid ?? "unknown", confirmed: outspend.confirmed } :
+                { status: "on-fork", target, spentBy: outspend.txid ?? "unknown", spentByVin: outspend.vin, confirmed: outspend.confirmed } :
                 { status: "on-fork", target };
         }
         if (target.vout !== undefined) {
@@ -345,7 +347,7 @@ function printVerdict(verdict: Verdict): void {
         case "on-fork":
             if (verdict.spentBy) {
                 console.log(chalk.yellow(`  Already on BIP110, but spent there by ${verdict.spentBy}${verdict.confirmed === false ? " (mempool)" : ""}` +
-                    (verdict.spentBy === "unknown" ? "" : `\n    ${bip110Tx(verdict.spentBy)}`)));
+                    (verdict.spentBy === "unknown" ? "" : `\n    ${bip110Tx(verdict.spentBy, "vin", verdict.spentByVin)}`)));
             } else {
                 console.log(chalk.green(`  Already on BIP110${verdict.target.vout === undefined ? "" : " and unspent"}: nothing to copy`));
             }
@@ -376,7 +378,7 @@ function writeReport(verdicts: Verdict[], order: MissingTx[], outputDir: string,
         targets: verdicts.map(v => ({
             target: label(v.target),
             status: v.status,
-            ...(v.status === "on-fork" && v.spentBy ? { spentBy: v.spentBy, confirmed: v.confirmed } : {}),
+            ...(v.status === "on-fork" && v.spentBy ? { spentBy: v.spentBy, spentByVin: v.spentByVin, confirmed: v.confirmed } : {}),
             ...(v.status === "copyable" ? { sendOrder: v.trace.missing.map(tx => tx.txid), checked: v.trace.checked } : {}),
             ...(v.status === "blocked" ? { blocker: v.blocker, message: v.message } : {}),
             ...(v.status === "error" ? { message: v.message } : {}),

@@ -18,9 +18,9 @@ async function run() {
     assert.strictEqual(await new EsploraBackend("https://mempool.guide/api", missingFetch).hasTransaction(unknown), false);
     const presentFetch = async () => new Response(JSON.stringify({ txid: unknown }), { status: 200 });
     assert.strictEqual(await new EsploraBackend("https://mempool.guide/api", presentFetch).hasTransaction(unknown), true);
-    const outspendFetch = async () => new Response(JSON.stringify({ spent: true, txid: unknown, status: { confirmed: true } }), { status: 200 });
+    const outspendFetch = async () => new Response(JSON.stringify({ spent: true, txid: unknown, vin: 2, status: { confirmed: true } }), { status: 200 });
     assert.deepStrictEqual(await new EsploraBackend("https://mempool.guide/api", outspendFetch).outspend(unknown, 0),
-        { spent: true, txid: unknown, confirmed: true });
+        { spent: true, txid: unknown, vin: 2, confirmed: true });
 
     const shared = "a".repeat(64);
     const A = shared.toUpperCase();
@@ -48,8 +48,11 @@ async function run() {
 
     // A different fork spender blocks the copy.
     await assert.rejects(traceMissingParents(root.getId(), {
-        ...sources, getForkOutspend: async () => ({ spent: true, txid: unknown, confirmed: true }),
+        ...sources, getForkOutspend: async () => ({ spent: true, txid: unknown, vin: 4, confirmed: true }),
     }), error => error instanceof CopyImpossibleError && error.blocker.kind === "spent-input" &&
+        error.message.includes(`https://mempool.space/tx/${a.getId()}`) &&
+        error.message.includes(`https://mempool.guide/tx/${shared}#vout=0`) &&
+        error.message.includes(`https://mempool.guide/tx/${unknown}#vin=4`) &&
         error.blocker.spendingTx === a.getId() && error.blocker.input.txid === shared &&
         error.blocker.spentBy === unknown && error.blocker.confirmed === true);
 
@@ -87,8 +90,8 @@ async function run() {
     await assert.rejects(traceMissingParents(root.getId(), sources, { maxTransactions: 2 }), /max-transactions/);
 
     // checkTarget verdicts.
-    const onFork = await checkTarget({ txid: shared, vout: 3 }, { ...sources, getForkOutspend: async () => ({ spent: true, txid: unknown, confirmed: false }) });
-    assert.deepStrictEqual(onFork, { status: "on-fork", target: { txid: shared, vout: 3 }, spentBy: unknown, confirmed: false });
+    const onFork = await checkTarget({ txid: shared, vout: 3 }, { ...sources, getForkOutspend: async () => ({ spent: true, txid: unknown, vin: 1, confirmed: false }) });
+    assert.deepStrictEqual(onFork, { status: "on-fork", target: { txid: shared, vout: 3 }, spentBy: unknown, spentByVin: 1, confirmed: false });
     assert.deepStrictEqual(await checkTarget({ txid: shared }, sources), { status: "on-fork", target: { txid: shared } });
     const copyable = await checkTarget({ txid: root.getId(), vout: 0 }, sources);
     assert.strictEqual(copyable.status, "copyable");

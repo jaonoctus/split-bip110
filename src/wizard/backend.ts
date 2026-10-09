@@ -14,7 +14,8 @@ export type BackendUtxo = {
     confirmed: boolean;
 };
 
-export type Outspend = { spent: boolean; txid?: string; confirmed?: boolean };
+// vin is the spending input's index in txid.
+export type Outspend = { spent: boolean; txid?: string; vin?: number; confirmed?: boolean };
 
 // Chain data source. Only individual addresses (or their
 // script hashes) are ever sent; never the descriptor or xpub.
@@ -150,12 +151,14 @@ export class EsploraBackend implements Backend {
         const result = await this.json(`/tx/${txid}/outspend/${vout}`);
         if (!isRecord(result) || typeof result.spent !== "boolean" ||
             (result.spent && result.txid !== undefined && (typeof result.txid !== "string" || !TXID.test(result.txid))) ||
+            (result.spent && result.vin !== undefined && (!Number.isSafeInteger(result.vin) || (result.vin as number) < 0)) ||
             (result.status !== undefined && (!isRecord(result.status) || typeof result.status.confirmed !== "boolean"))) {
             throw new Error(`Invalid outspend response for ${txid}:${vout}`);
         }
         return {
             spent: result.spent,
             txid: result.txid as string | undefined,
+            vin: result.spent ? result.vin as number | undefined : undefined,
             confirmed: isRecord(result.status) ? result.status.confirmed as boolean : undefined,
         };
     }
