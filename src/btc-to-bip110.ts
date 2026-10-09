@@ -327,9 +327,16 @@ export async function runBtcToBip110(values: string[], options: BtcToBip110Optio
 
         const order = combinedSendOrder(verdicts);
         const counts = (status: Verdict["status"]) => verdicts.filter(v => v.status === status).length;
-        console.log(`\n${counts("on-fork")} already on BIP110, ${counts("copyable")} can be copied, ` +
-            `${counts("blocked")} cannot be copied, ${counts("error")} failed.`);
+        // Each result is already printed above it, so one target needs no summary.
+        if (verdicts.length > 1) {
+            const parts = ([["on-fork", "already on BIP110"], ["copyable", "can be copied"],
+                ["blocked", "cannot be copied"], ["error", "could not be checked"]] as const)
+                .filter(([status]) => counts(status) > 0)
+                .map(([status, text]) => `${counts(status)} ${text}`);
+            console.log(`\nSummary of ${verdicts.length}: ${parts.join(", ")}.`);
+        }
         if (order.length > 0) {
+            console.log("");
             const dir = writeReport(verdicts, order, options.outputDir, fork.label, bitcoin.label);
             console.log(`Wrote ${order.length} transactions in parent-first order to ${dir}`);
             console.log(chalk.dim("Nothing was broadcast. Review the transactions before sending them to BIP110 yourself."));
