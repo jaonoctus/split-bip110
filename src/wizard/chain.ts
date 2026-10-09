@@ -15,6 +15,8 @@ export type ChainProfile = {
     scanTag: string;
     outputPrefix: string;
     explorerTx: string;
+    // Block explorer; transactions are at `${explorer}/tx/${txid}`.
+    explorer: string;
 };
 
 export const CHECK_HEIGHT = 961635;
@@ -31,6 +33,7 @@ export const BIP110: ChainProfile = {
     scanTag: "",
     outputPrefix: "split-bip110",
     explorerTx: "https://mempool.guide/tx/test",
+    explorer: "https://mempool.guide",
 };
 
 export const BITCOIN: ChainProfile = {
@@ -45,4 +48,5 @@ export const BITCOIN: ChainProfile = {
     scanTag: "btc_",
     outputPrefix: "move-btc",
     explorerTx: "https://mempool.space/tx/test",
+    explorer: "https://mempool.space",
 };

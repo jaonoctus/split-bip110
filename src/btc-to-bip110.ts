@@ -19,12 +19,25 @@ export type CopyBlocker =
     | { kind: "spent-input"; spendingTx: string; input: Input; spentBy: string; confirmed?: boolean }
     | { kind: "missing-coinbase"; txid: string };
 
+const btcTx = (txid: string) => `${BITCOIN.explorer}/tx/${txid}`;
+const bip110Tx = (txid: string, vout?: number) => `${BIP110.explorer}/tx/${txid}${vout === undefined ? "" : `#vout=${vout}`}`;
+
+function blockerMessage(blocker: CopyBlocker): string {
+    if (blocker.kind === "missing-coinbase") {
+        return `Cannot be copied to BIP110: it descends from Bitcoin block reward ${blocker.txid}, mined after the split\n` +
+            `  Block reward (BTC): ${btcTx(blocker.txid)}`;
+    }
+    const { spendingTx, input, spentBy } = blocker;
+    return `${blocker.confirmed ? "Cannot be copied to the current BIP110 chain" : "Blocked for now by a BIP110 mempool transaction"}: ` +
+        `${spendingTx} needs ${input.txid}:${input.vout}, which is already spent there by ${spentBy}\n` +
+        `  BTC transaction:    ${btcTx(spendingTx)}\n` +
+        `  Needed coin:        ${bip110Tx(input.txid, input.vout)}\n` +
+        `  Spent on BIP110 by: ${spentBy === "unknown" ? "unknown transaction" : bip110Tx(spentBy)}`;
+}
+
 export class CopyImpossibleError extends Error {
     constructor(readonly blocker: CopyBlocker) {
-        super(blocker.kind === "spent-input" ?
-            `${blocker.confirmed ? "Cannot be copied to the current BIP110 chain" : "Blocked for now by a BIP110 mempool transaction"}: ` +
-            `${blocker.spendingTx} needs ${blocker.input.txid}:${blocker.input.vout}, which is already spent there by ${blocker.spentBy}` :
-            `Cannot be copied to BIP110: it descends from Bitcoin block reward ${blocker.txid}, mined after the split`);
+        super(blockerMessage(blocker));
         this.name = "CopyImpossibleError";
     }
 }
@@ -331,7 +344,8 @@ function printVerdict(verdict: Verdict): void {
     switch (verdict.status) {
         case "on-fork":
             if (verdict.spentBy) {
-                console.log(chalk.yellow(`  Already on BIP110, but spent there by ${verdict.spentBy}${verdict.confirmed === false ? " (mempool)" : ""}`));
+                console.log(chalk.yellow(`  Already on BIP110, but spent there by ${verdict.spentBy}${verdict.confirmed === false ? " (mempool)" : ""}` +
+                    (verdict.spentBy === "unknown" ? "" : `\n    ${bip110Tx(verdict.spentBy)}`)));
             } else {
                 console.log(chalk.green(`  Already on BIP110${verdict.target.vout === undefined ? "" : " and unspent"}: nothing to copy`));
             }
@@ -343,7 +357,7 @@ function printVerdict(verdict: Verdict): void {
             break;
         }
         case "blocked":
-            console.log(chalk.red(`  ${verdict.message}`));
+            console.log(chalk.red(`  ${verdict.message.replace(/\n/g, "\n  ")}`));
             break;
         case "error":
             console.log(chalk.red(`  Check failed: ${verdict.message}`));
