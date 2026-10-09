@@ -6,6 +6,7 @@ const tests = [
     { file: "smoke-sign.test.js", args: [] },
     { file: "utxo-helper.test.js", args: [] },
     { file: "wizard.test.js", args: [] },
+    { file: "btc-to-bip110.test.js", args: [] },
 ];
 
 for (const t of tests) {

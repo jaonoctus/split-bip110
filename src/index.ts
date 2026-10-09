@@ -2,6 +2,7 @@
 import chalk from "chalk";
 import { Command, InvalidArgumentError, Option } from "commander";
 import { runLegacy } from "./legacy";
+import { runBtcToBip110 } from "./btc-to-bip110";
 import { ChainAnswers, runWizard } from "./wizard/wizard";
 // Resolved at runtime from dist/, so package.json stays outside rootDir.
 const { version } = require("../package.json") as { version: string };
@@ -114,6 +115,44 @@ program
     .description("Original flow: read config.toml and a Sparrow UTXO CSV, sign with the seeds in the config")
     .option("-c, --config <file>", "config file", "config.toml")
     .action(opts => runLegacy(opts.config));
+
+program
+    .command("btc-to-bip110")
+    .description("Check whether Bitcoin (BTC) transactions or coins made after the split can be copied to the BIP110 chain")
+    .argument("<txid-or-outpoint...>", "BTC txids or txid:vout coins (space or comma separated)")
+    .option("--esplora <url>", "Esplora API of the BIP110 chain (default: mempool.guide)")
+    .addOption(new Option("--btc-esplora <url>", "Esplora API of the Bitcoin chain (default: mempool.space)").conflicts("btcElectrum"))
+    .addOption(new Option("--btc-electrum <server>", "Electrum server of the Bitcoin chain, e.g. ssl://host:50002"))
+    .option("--electrum-self-signed", "accept a self-signed TLS certificate from the Electrum server")
+    .option("--concurrency <n>", "parallel requests (1-32)", positiveInt, 4)
+    .option("--max-transactions <n>", "transactions to check per target before giving up", positiveInt, 5000)
+    .option("--output-dir <dir>", "where the btc-to-bip110-* folder is created", ".")
+    .addHelpText("after", `
+This only goes one way: Bitcoin (BTC) to BIP110. A BTC transaction is valid on BIP110 too, so it
+can be sent there as is, together with any ancestors BIP110 is missing. Missing ancestors are
+traced back on Bitcoin until every branch reaches a transaction BIP110 already has, and the
+outputs they spend must still be unspent on BIP110. A target cannot be copied when one of those
+outputs was spent by a different BIP110 transaction, or when it descends from a Bitcoin block
+reward mined after the split.
+
+When anything can be copied, send-order.hex lists the raw transactions parent first. Nothing is broadcast.
+
+Exit code: 0 when every target is on BIP110 or can be copied, 2 when any cannot be copied, 1 on errors.
+
+Example:
+  split-bip110 btc-to-bip110 59a560b833a991168e70dc7ae2acefc376b8b206b2d30ccc2dd61f8f1f8faa5c:0`)
+    .action(async (targets: string[], opts) => {
+        if (opts.concurrency > 32) program.error("--concurrency must be 1-32.");
+        await runBtcToBip110(targets, {
+            forkEsplora: opts.esplora,
+            btcEsplora: opts.btcEsplora,
+            btcElectrum: opts.btcElectrum,
+            electrumSelfSigned: !!opts.electrumSelfSigned,
+            concurrency: opts.concurrency,
+            maxTransactions: opts.maxTransactions,
+            outputDir: opts.outputDir,
+        });
+    });
 
 // Explicit handlers: as PID 1 in a container the kernel ignores SIGINT/SIGTERM
 // unless the process handles them, so Ctrl+C during a scan would do nothing.

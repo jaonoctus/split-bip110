@@ -14,6 +14,8 @@ export type BackendUtxo = {
     confirmed: boolean;
 };
 
+export type Outspend = { spent: boolean; txid?: string; confirmed?: boolean };
+
 // Chain data source. Only individual addresses (or their
 // script hashes) are ever sent; never the descriptor or xpub.
 export interface Backend {
@@ -59,7 +61,9 @@ export class EsploraBackend implements Backend {
         this.label = this.base;
     }
 
-    private async request(path: string): Promise<Response> {
+    private async request(path: string): Promise<Response>;
+    private async request(path: string, allowMissing: true): Promise<Response | null>;
+    private async request(path: string, allowMissing = false): Promise<Response | null> {
         const url = `${this.base}${path}`;
         for (let attempt = 0; attempt < 5; attempt++) {
             let response: Response;
@@ -71,6 +75,7 @@ export class EsploraBackend implements Backend {
                 continue;
             }
             if (response.ok) return response;
+            if (allowMissing && response.status === 404) return null;
             if (response.status !== 429 && response.status < 500) {
                 throw new Error(`HTTP ${response.status} from ${url}`);
             }
@@ -129,6 +134,30 @@ export class EsploraBackend implements Backend {
 
     async blockHash(height: number): Promise<string> {
         return (await (await this.request(`/block-height/${height}`)).text()).trim();
+    }
+
+    // mempool's /tx/:txid/status answers 200 even for unknown txids, so ask for the transaction itself.
+    async hasTransaction(txid: string): Promise<boolean> {
+        const response = await this.request(`/tx/${txid}`, true);
+        if (!response) return false;
+        let tx: unknown;
+        try { tx = await response.json(); } catch { throw new Error(`Invalid JSON from ${this.base}/tx/${txid}`); }
+        if (!isRecord(tx) || tx.txid !== txid) throw new Error(`Invalid transaction response for ${txid}`);
+        return true;
+    }
+
+    async outspend(txid: string, vout: number): Promise<Outspend> {
+        const result = await this.json(`/tx/${txid}/outspend/${vout}`);
+        if (!isRecord(result) || typeof result.spent !== "boolean" ||
+            (result.spent && result.txid !== undefined && (typeof result.txid !== "string" || !TXID.test(result.txid))) ||
+            (result.status !== undefined && (!isRecord(result.status) || typeof result.status.confirmed !== "boolean"))) {
+            throw new Error(`Invalid outspend response for ${txid}:${vout}`);
+        }
+        return {
+            spent: result.spent,
+            txid: result.txid as string | undefined,
+            confirmed: isRecord(result.status) ? result.status.confirmed as boolean : undefined,
+        };
     }
 
     async recommendedFeeRate(): Promise<number | undefined> {

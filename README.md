@@ -110,6 +110,24 @@ docker run --rm -it --user "$(id -u):$(id -g)" -v "$PWD:/data" split-bip110
 
 The image is built only from `package.json`, `package-lock.json`, `tsconfig.json` and `src/`, so a `config.toml` with seed words is never copied into it.
 
+## Copying BTC transactions to BIP110
+
+A Bitcoin (BTC) transaction made after the split is also valid on BIP110, so it can be sent there as is, as long as BIP110 can still accept it. (The other direction never works: the main wizard signs BIP110 transactions so that BTC rejects them.) `split-bip110 btc-to-bip110` checks this for BTC txids or `txid:vout` coins:
+
+```bash
+split-bip110 btc-to-bip110 59a560b833a991168e70dc7ae2acefc376b8b206b2d30ccc2dd61f8f1f8faa5c:0
+```
+
+For each one it reports:
+
+- **Already on BIP110**: the transaction is there (for a coin, also whether BIP110 has already spent it).
+- **Can be copied**: the transaction and its missing ancestors can be sent to BIP110. The ancestors are traced back on Bitcoin until every branch reaches a transaction BIP110 already has, and the outputs they spend must still be unspent on BIP110.
+- **Cannot be copied**: one of those outputs was already spent by a different BIP110 transaction (if that spend is still in the mempool, it may clear later), or the coins descend from a Bitcoin block reward mined after the split.
+
+When anything can be copied, a new `btc-to-bip110-TIMESTAMP/` folder gets `send-order.hex` (raw transactions, parents first, one per line), `send-order.txids` and `report.json`. Nothing is broadcast; review the transactions and send them to BIP110 yourself. The exit code is 0 when everything is on BIP110 or can be copied, 2 when something cannot be copied, and 1 on errors.
+
+Both chains are checked by a block after the split before anything is traced. BIP110 is read from mempool.guide (`--esplora` for another Esplora server, which must support outspend lookups) and Bitcoin from mempool.space (`--btc-esplora`, or `--btc-electrum ssl://host:50002`). Only txids are sent to these servers. A trace can take many requests for coins with a long history after the split; it gives up after 5000 transactions per target (`--max-transactions`).
+
 ## Config file mode
 
 The original non-interactive flow is still available as `split-bip110 legacy [--config config.toml]`. It reads a UTXO CSV file and the seed words from `config.toml`.
